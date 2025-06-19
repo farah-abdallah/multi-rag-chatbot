@@ -1,0 +1,35 @@
+# Core requirements for Multi-RAG Chatbot
+streamlit>=1.28.0
+langchain>=0.0.350
+langchain-google-genai>=1.0.0
+langchain-community>=0.0.20
+faiss-cpu>=1.7.4
+python-dotenv>=1.0.0
+
+# Document processing
+PyPDF2>=3.0.1
+pdfplumber>=0.9.0
+python-docx>=0.8.11
+openpyxl>=3.1.2
+unstructured>=0.10.0
+sentence-transformers>=2.2.2
+
+# Web search for CRAG
+duckduckgo-search>=3.9.0
+
+# Utilities
+numpy>=1.24.0
+pandas>=2.0.0
+
+# For visualization and advanced features
+plotly>=5.17.0
+
+# For chunk size evaluation (optional)
+llama-index>=0.9.0
+llama-index-embeddings-huggingface>=0.1.0
+nest-asyncio>=1.5.0
+
+# Additional dependencies
+google-generativeai>=0.3.0
+rank-bm25>=0.2.2
+PyMuPDF>=1.23.0
