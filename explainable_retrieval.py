@@ -1,11 +1,22 @@
 import os
 import sys
+import io
+import argparse
 from dotenv import load_dotenv
 import google.generativeai as genai
 from sentence_transformers import SentenceTransformer
 from langchain_community.vectorstores import FAISS
 from typing import List
 import logging
+
+# Import API key manager for rotation
+try:
+    from api_key_manager import get_api_manager
+    API_MANAGER_AVAILABLE = True
+    print("🔑 Explainable Retrieval API key rotation manager loaded")
+except ImportError:
+    API_MANAGER_AVAILABLE = False
+    print("⚠️ Explainable Retrieval API key manager not found - using single key mode")
 
 # Set up logging for backend visibility
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,9 +28,98 @@ from helper_functions import *
 # Load environment variables from a .env file
 load_dotenv()
 
-# Set the Google API key environment variable
-os.environ["GOOGLE_API_KEY"] = os.getenv('GOOGLE_API_KEY')
-genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+# Set up API key management
+if API_MANAGER_AVAILABLE:
+    try:
+        api_manager = get_api_manager()
+        print(f"🎯 Explainable Retrieval API Manager Status: {api_manager.get_status()}")
+    except Exception as e:
+        print(f"⚠️ Explainable Retrieval API Manager initialization failed: {e}")
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if api_key:
+            genai.configure(api_key=api_key)
+            print("🔑 Explainable Retrieval using fallback single API key")
+        else:
+            raise ValueError("GOOGLE_API_KEY not found in environment variables")
+else:
+    # Fallback to single key
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if api_key:
+        genai.configure(api_key=api_key)
+        print("🔑 Explainable Retrieval using single API key mode")
+    else:
+        raise ValueError("GOOGLE_API_KEY not found in environment variables")
+
+
+class SimpleGeminiLLM:
+    """Simple Gemini LLM wrapper with API key rotation support"""
+    
+    def __init__(self, model_name="gemini-1.5-flash", silent=False):
+        self.model_name = model_name
+        self.silent = silent
+        
+        # Try to use API manager if available, otherwise fall back to single key
+        global api_manager
+        if API_MANAGER_AVAILABLE and 'api_manager' in globals():
+            self.use_rotation = True
+            if not self.silent:
+                print(f"� Explainable Retrieval SimpleGeminiLLM initialized with key rotation for {model_name}")
+        else:
+            self.use_rotation = False
+            # Configure genai with single key
+            api_key = os.getenv('GOOGLE_API_KEY')
+            if api_key:
+                genai.configure(api_key=api_key)
+                if not self.silent:
+                    print(f"🔑 Explainable Retrieval SimpleGeminiLLM initialized with single key for {model_name}")
+            else:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+    
+    def generate_content(self, prompt, max_retries=3):
+        """Generate content with automatic key rotation on quota errors"""
+        
+        if not self.use_rotation:
+            # Single key mode
+            model = genai.GenerativeModel(self.model_name)
+            return model.generate_content(prompt)
+        
+        # Key rotation mode
+        for attempt in range(max_retries):
+            try:
+                # Get current API key and configure genai
+                current_key = api_manager.get_current_key()
+                genai.configure(api_key=current_key)
+                
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(prompt)
+                
+                # Successful generation
+                return response
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Check for quota/rate limit errors
+                if any(err in error_msg for err in ['quota', 'rate limit', '429', 'resource_exhausted']):
+                    if not self.silent:
+                        print(f"⚠️ Explainable Retrieval Quota/rate limit hit on attempt {attempt + 1}: {e}")
+                    
+                    if attempt < max_retries - 1:  # Not the last attempt
+                        if api_manager.rotate_key():
+                            if not self.silent:
+                                print(f"🔄 Explainable Retrieval Rotated to new API key, retrying...")
+                            continue
+                        else:
+                            if not self.silent:
+                                print("❌ Explainable Retrieval No more API keys available for rotation")
+                            raise Exception("All API keys exhausted due to quota limits")
+                    else:
+                        raise Exception(f"Max retries ({max_retries}) exceeded due to quota limits")
+                else:
+                    # Non-quota error, don't retry
+                    raise e
+        
+        raise Exception(f"Failed to generate content after {max_retries} attempts")
 
 
 # Custom embeddings wrapper using sentence-transformers
@@ -51,12 +151,12 @@ class ExplainableRetriever:
         logger.info("📊 Creating vector embeddings using SentenceTransformers...")
         self.vectorstore = FAISS.from_texts(texts, self.embeddings)
         logger.info("✅ Vector store created successfully")
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
-        self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
-        logger.info("🤖 Gemini model initialized for explanations")
+        self.llm = SimpleGeminiLLM('gemini-1.5-flash', silent=True)
+        self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": 2})
+        logger.info("🤖 SimpleGeminiLLM initialized for explanations with key rotation")
 
     def _generate_explanation(self, query: str, context: str) -> str:
-        """Generate explanation using direct Gemini SDK"""
+        """Generate explanation using SimpleGeminiLLM with key rotation"""
         logger.info(f"💡 Generating explanation for context chunk (length: {len(context)} chars)")
         prompt = f"""
         Analyze the relationship between the following query and the retrieved context.
@@ -70,8 +170,8 @@ class ExplainableRetriever:
         """
         
         try:
-            logger.info("🔄 Calling Gemini API for explanation generation...")
-            response = self.model.generate_content(prompt)
+            logger.info("🔄 Calling SimpleGeminiLLM for explanation generation...")
+            response = self.llm.generate_content(prompt)
             explanation = response.text
             logger.info(f"✅ Explanation generated successfully (length: {len(explanation)} chars)")
             return explanation
@@ -106,6 +206,7 @@ class ExplainableRAGMethod:
     def __init__(self, texts):
         logger.info(f"🚀 Initializing ExplainableRAGMethod with {len(texts)} text chunks")
         self.explainable_retriever = ExplainableRetriever(texts)
+        self.llm = SimpleGeminiLLM('gemini-1.5-flash', silent=True)
         logger.info("✅ ExplainableRAGMethod initialization complete")
 
     def run(self, query):
@@ -151,12 +252,9 @@ class ExplainableRAGMethod:
             1. Directly addresses the user's query
             2. Synthesizes information from the relevant contexts
             3. Mentions which sources support each part of your answer
-            4. Is clear and comprehensive
-
-            Answer:            """
+            4. Is clear and comprehensive            Answer:            """
             
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(answer_prompt)
+            response = self.llm.generate_content(answer_prompt)
             
             logger.info(f"✅ Comprehensive answer generated successfully (length: {len(response.text)} chars)")
             return response.text

@@ -91,11 +91,11 @@ if "%choice%"=="1" (
 
 if "%choice%"=="2" (
     echo.
-    echo 🚀 Launching Advanced Chatbot...
+    echo 🚀 Launching Chatbot...
     echo The chatbot will open in your web browser
     echo Press Ctrl+C in this window to stop the chatbot
     echo.
-    streamlit run advanced_chatbot_app.py
+    streamlit run chatbot_app.py
     goto :end
 )
 

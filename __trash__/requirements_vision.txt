@@ -1,0 +1,30 @@
+# Vision-Enhanced Multi-RAG Requirements
+# Install with: pip install -r requirements_vision.txt
+
+# Core dependencies (existing)
+langchain>=0.1.0
+langchain-google-genai>=0.1.0
+langchain-community>=0.0.20
+faiss-cpu>=1.7.4
+python-dotenv>=1.0.0
+sentence-transformers>=2.2.2
+streamlit>=1.28.0
+pandas>=2.0.0
+
+# Vision processing dependencies (NEW)
+PyMuPDF>=1.23.0        # PDF image extraction (fitz)
+Pillow>=10.0.0         # Image processing (PIL)
+
+# Optional for enhanced document processing
+unstructured>=0.10.0   # Better document parsing
+pytesseract>=0.3.10    # OCR capabilities (requires Tesseract installed)
+opencv-python>=4.8.0   # Advanced image processing
+
+# Web search (existing - for CRAG)
+duckduckgo-search>=3.9.0
+requests>=2.31.0
+
+# Development and testing
+pytest>=7.4.0
+black>=23.0.0
+flake8>=6.0.0

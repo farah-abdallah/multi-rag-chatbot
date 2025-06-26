@@ -17,6 +17,9 @@ Alternative models available:
 import os
 import sys
 import glob
+import io
+import base64
+import argparse
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_community.vectorstores import FAISS
@@ -28,6 +31,15 @@ from langchain_core.retrievers import BaseRetriever
 from typing import List, Dict, Any, Union
 from langchain.docstore.document import Document
 import google.generativeai as genai
+
+# Import API key manager for rotation
+try:
+    from api_key_manager import get_api_manager
+    API_MANAGER_AVAILABLE = True
+    print("🔑 API key rotation manager loaded")
+except ImportError:
+    API_MANAGER_AVAILABLE = False
+    print("⚠️ API key manager not found - using single key mode")
 
 # Multi-format document loaders
 from langchain_community.document_loaders import (
@@ -44,34 +56,77 @@ sys.path.append(os.path.abspath(
 # Load environment variables from a .env file
 load_dotenv()
 
-# Set the Google API key environment variable
-api_key = os.getenv('GOOGLE_API_KEY')
-if api_key:
-    genai.configure(api_key=api_key)
+# Set up API key management
+if API_MANAGER_AVAILABLE:
+    try:
+        api_manager = get_api_manager()
+        print(f"🎯 API Manager Status: {api_manager.get_status()}")
+    except Exception as e:
+        print(f"⚠️ API Manager initialization failed: {e}")
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if api_key:
+            genai.configure(api_key=api_key)
+            print("🔑 Using fallback single API key")
+else:
+    # Fallback to single key
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if api_key:
+        genai.configure(api_key=api_key)
+        print("🔑 Using single API key mode")
 
 
 class SimpleGeminiLLM:
-    """Simple wrapper for Google Gemini API"""
+    """Enhanced wrapper for Google Gemini API with Key Rotation"""
     
     def __init__(self, model="gemini-1.5-flash", max_tokens=4000, temperature=0):
         self.model_name = model
         self.max_tokens = max_tokens
         self.temperature = temperature
+          # Set up API manager if available
+        if API_MANAGER_AVAILABLE:
+            try:
+                self.api_manager = get_api_manager()
+                self.use_rotation = True
+            except:
+                self.api_manager = None
+                self.use_rotation = False
+        else:
+            self.api_manager = None
+            self.use_rotation = False
+        
         self.model = genai.GenerativeModel(model)
     
-    def invoke(self, prompt_text):
-        """Invoke the model with a text prompt"""
-        try:
-            response = self.model.generate_content(
-                prompt_text,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=self.max_tokens,
-                    temperature=self.temperature,
+    def invoke(self, prompt_text, max_retries=3):
+        """Invoke the model with automatic key rotation on quota errors"""
+        for attempt in range(max_retries):
+            try:
+                response = self.model.generate_content(
+                    prompt_text,
+                    generation_config=genai.types.GenerationConfig(
+                        max_output_tokens=self.max_tokens,
+                        temperature=self.temperature,
+                    )
                 )
-            )
-            return SimpleResponse(response.text)
-        except Exception as e:
-            raise Exception(f"Gemini API error: {str(e)}")
+                return SimpleResponse(response.text)
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Check if it's a quota error and we have API rotation
+                if self.use_rotation and self.api_manager and self.api_manager.handle_quota_error(error_msg):
+                    # Key switched, reinitialize model with new key
+                    self.model = genai.GenerativeModel(self.model_name)
+                    print(f"🔄 Retrying with new API key... (attempt {attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    # Non-quota error or no rotation available
+                    if attempt < max_retries - 1:
+                        print(f"❌ API Error (attempt {attempt + 1}/{max_retries}): {error_msg}")
+                        continue
+                    else:
+                        raise Exception(f"Gemini API error: {error_msg}")
+          # All retries exhausted
+        raise Exception(f"All API attempts exhausted after {max_retries} attempts")
 
 
 class SimpleResponse:
@@ -87,8 +142,7 @@ def load_documents_from_files(file_paths: Union[str, List[str]], chunk_size: int
     """
     if isinstance(file_paths, str):
         # Handle single file or directory
-        if os.path.isdir(file_paths):
-            # Load all supported files from directory
+        if os.path.isdir(file_paths):            # Load all supported files from directory
             file_paths = []
             for ext in ['*.pdf', '*.txt', '*.csv', '*.json', '*.docx', '*.xlsx']:
                 file_paths.extend(glob.glob(os.path.join(file_paths, ext)))
@@ -100,29 +154,38 @@ def load_documents_from_files(file_paths: Union[str, List[str]], chunk_size: int
     for file_path in file_paths:
         try:
             file_extension = os.path.splitext(file_path)[1].lower()
-            
             print(f"Loading {file_extension.upper()} file: {file_path}")
             
             # Choose appropriate loader based on file type
             if file_extension == '.pdf':
+                # Standard text extraction
                 loader = PyPDFLoader(file_path)
+                documents = loader.load()
+                all_documents.extend(documents)
+                    
             elif file_extension == '.txt':
                 loader = TextLoader(file_path, encoding='utf-8')
+                documents = loader.load()
+                all_documents.extend(documents)
             elif file_extension == '.csv':
                 loader = CSVLoader(file_path)
+                documents = loader.load()
+                all_documents.extend(documents)
             elif file_extension == '.json':
                 loader = JSONLoader(file_path, jq_schema='.', text_content=False)
+                documents = loader.load()
+                all_documents.extend(documents)
             elif file_extension in ['.docx', '.doc']:
                 loader = UnstructuredWordDocumentLoader(file_path)
+                documents = loader.load()
+                all_documents.extend(documents)
             elif file_extension in ['.xlsx', '.xls']:
                 loader = UnstructuredExcelLoader(file_path)
+                documents = loader.load()
+                all_documents.extend(documents)
             else:
                 print(f"Warning: Unsupported file type {file_extension}, skipping {file_path}")
                 continue
-            
-            # Load documents
-            documents = loader.load()
-            all_documents.extend(documents)
             
             print(f"✅ Successfully loaded {len(documents)} pages from {file_path}")
             
@@ -170,8 +233,9 @@ class QueryClassifier:
     def __init__(self):
         self.llm = SimpleGeminiLLM(model="gemini-1.5-flash", temperature=0, max_tokens=4000)
 
-    def classify(self, query):
-        print("Classifying query...")
+    def classify(self, query, silent=False):
+        if not silent:
+            print("Classifying query...")
         prompt_text = f"""Classify the following query into one of these categories: Factual, Analytical, Opinion, or Contextual.
 Respond with ONLY one word: Factual, Analytical, Opinion, or Contextual.
 
@@ -201,22 +265,25 @@ class BaseRetrievalStrategy:
         self.db = FAISS.from_documents(self.documents, self.embeddings)
         self.llm = SimpleGeminiLLM(model="gemini-1.5-flash", temperature=0, max_tokens=4000)
 
-    def retrieve(self, query, k=4):
+    def retrieve(self, query, k=4, silent=False):
         return self.db.similarity_search(query, k=k)
 
 
 class FactualRetrievalStrategy(BaseRetrievalStrategy):
-    def retrieve(self, query, k=4):
-        print("Retrieving factual information...")
+    def retrieve(self, query, k=4, silent=False):
+        if not silent:
+            print("Retrieving factual information...")
         enhanced_query_prompt_text = f"Enhance this factual query for better information retrieval: {query}"
         enhanced_query_result = self.llm.invoke(enhanced_query_prompt_text)
         enhanced_query = enhanced_query_result.content
-        print(f'Enhanced query: {enhanced_query}')
+        if not silent:
+            print(f'Enhanced query: {enhanced_query}')
 
         docs = self.db.similarity_search(enhanced_query, k=k * 2)
 
         ranked_docs = []
-        print("Ranking documents...")
+        if not silent:
+            print("Ranking documents...")
         for doc in docs:
             ranking_prompt_text = f"On a scale of 1-10, how relevant is this document to the query: '{enhanced_query}'?\nDocument: {doc.page_content}\nRelevance score (just the number):"
             
@@ -236,8 +303,9 @@ class FactualRetrievalStrategy(BaseRetrievalStrategy):
 
 
 class AnalyticalRetrievalStrategy(BaseRetrievalStrategy):
-    def retrieve(self, query, k=4):
-        print("Retrieving analytical information...")
+    def retrieve(self, query, k=4, silent=False):
+        if not silent:
+            print("Retrieving analytical information...")
         sub_queries_prompt_text = f"Generate {k} sub-questions for: {query}\nList them as numbered items (1. 2. 3. etc.):"
         
         result = self.llm.invoke(sub_queries_prompt_text)
@@ -250,7 +318,8 @@ class AnalyticalRetrievalStrategy(BaseRetrievalStrategy):
             lines = result.content.strip().split('\n')
             sub_queries = [line.strip() for line in lines if line.strip()][:k]
         
-        print(f'Sub-queries: {sub_queries}')
+        if not silent:
+            print(f'Sub-queries: {sub_queries}')
 
         all_docs = []
         for sub_query in sub_queries:
@@ -274,12 +343,14 @@ class AnalyticalRetrievalStrategy(BaseRetrievalStrategy):
 
 
 class OpinionRetrievalStrategy(BaseRetrievalStrategy):
-    def retrieve(self, query, k=3):
-        print("Retrieving opinions...")
+    def retrieve(self, query, k=3, silent=False):
+        if not silent:
+            print("Retrieving opinions...")
         viewpoints_prompt_text = f"Identify {k} distinct viewpoints or perspectives on the topic: {query}"
         viewpoints_result = self.llm.invoke(viewpoints_prompt_text)
         viewpoints = viewpoints_result.content.split('\n')
-        print(f'Viewpoints: {viewpoints}')
+        if not silent:
+            print(f'Viewpoints: {viewpoints}')
 
         all_docs = []
         for viewpoint in viewpoints:
@@ -303,12 +374,14 @@ class OpinionRetrievalStrategy(BaseRetrievalStrategy):
 
 
 class ContextualRetrievalStrategy(BaseRetrievalStrategy):
-    def retrieve(self, query, k=4, user_context=None):
-        print("Retrieving contextual information...")
+    def retrieve(self, query, k=4, user_context=None, silent=False):
+        if not silent:
+            print("Retrieving contextual information...")
         context_prompt_text = f"Given the user context: {user_context or 'No specific context provided'}\nReformulate the query to best address the user's needs: {query}"
         contextualized_query_result = self.llm.invoke(context_prompt_text)
         contextualized_query = contextualized_query_result.content
-        print(f'Contextualized query: {contextualized_query}')
+        if not silent:
+            print(f'Contextualized query: {contextualized_query}')
 
         docs = self.db.similarity_search(contextualized_query, k=k * 2)
 
@@ -372,19 +445,160 @@ class AdaptiveRAG:
 
         Question: {question}
         Answer:"""
-
-    def answer(self, query: str) -> str:
-        category = self.classifier.classify(query)
-        strategy = self.strategies[category]
-        docs = strategy.retrieve(query)
         
-        # Format context and question
-        context = "\n".join([doc.page_content for doc in docs])
+        # Store the original texts for context retrieval
+        self.texts = texts
+        # Store the last query classification and retrieved docs for evaluation
+        self.last_classification = None
+        self.last_retrieved_docs = None
+        self.last_context = None
+
+    def get_context_for_query(self, query: str, silent: bool = False) -> str:
+        """
+        Get the context that would be used for a specific query.
+        This is essential for faithfulness evaluation.
+        
+        Args:
+            query: The query to get context for
+            silent: If True, suppress debug output (useful during evaluation)
+            
+        Returns:
+            The context string that would be used for this query
+        """
+        try:
+            if not silent:
+                print(f"🔍 Getting context for query: '{query[:50]}...'")
+              # Classify the query using the same logic as answer()
+            category = self.classifier.classify(query, silent=silent)
+            if not silent:
+                print(f"🔍 Query classified as: {category}")
+            
+            # Get the appropriate strategy
+            strategy = self.strategies[category]
+            if not silent:
+                print(f"🔍 Using strategy: {type(strategy).__name__}")
+              # Retrieve documents
+            docs = strategy.retrieve(query, silent=silent)
+            if not silent:
+                print(f"🔍 Retrieved {len(docs)} documents")
+            
+            # Format context the same way as in answer()
+            context = "\n".join([doc.page_content for doc in docs])
+            
+            # Store for debugging/evaluation purposes
+            self.last_classification = category
+            self.last_retrieved_docs = docs
+            self.last_context = context
+            
+            if not silent:
+                print(f"🔍 Context length: {len(context)} characters")
+                print(f"🔍 Context preview: {context[:200]}...")
+            
+            # Ensure we return non-empty context
+            if not context.strip():
+                if not silent:
+                    print("⚠️ Warning: Empty context generated!")
+                return "No relevant context found for this query."
+            
+            return context
+            
+        except Exception as e:
+            if not silent:
+                print(f"❌ Error getting context for query '{query}': {e}")
+                import traceback
+                traceback.print_exc()
+            return f"Error retrieving context: {str(e)}"
+    
+    def get_retriever_info(self) -> Dict[str, Any]:
+        """
+        Get information about the retrieval strategies and their vector stores.
+        Useful for evaluation and debugging.
+        
+        Returns:
+            Dictionary containing retriever information
+        """
+        info = {
+            'strategies': list(self.strategies.keys()),
+            'total_documents': len(self.texts),
+            'last_classification': self.last_classification,
+            'last_retrieved_count': len(self.last_retrieved_docs) if self.last_retrieved_docs else 0,
+            'last_context_length': len(self.last_context) if self.last_context else 0
+        }
+        
+        # Add vector store information for each strategy
+        for strategy_name, strategy in self.strategies.items():
+            if hasattr(strategy, 'db') and strategy.db:
+                info[f'{strategy_name.lower()}_vectorstore_count'] = strategy.db.index.ntotal if hasattr(strategy.db.index, 'ntotal') else 'unknown'
+        
+        return info
+
+    def answer(self, query: str, silent: bool = False) -> str:
+        """
+        Generate an answer for the given query.
+        
+        Args:
+            query: The question to answer
+            silent: If True, suppress debug output during context retrieval
+        
+        Returns:
+            The generated answer
+        """
+        # Get context using the new method (this also stores debug info)
+        context = self.get_context_for_query(query, silent=silent)
+        
+        # Format the prompt
         formatted_prompt = self.prompt_template.format(context=context, question=query)
         
         # Get response from LLM
         response = self.llm.invoke(formatted_prompt)
         return response.content
+
+    def test_context_extraction(self, test_query: str = "What is climate change?") -> Dict[str, Any]:
+        """
+        Test the context extraction functionality to debug faithfulness issues.
+        
+        Args:
+            test_query: Query to test with
+            
+        Returns:
+            Dictionary with test results
+        """
+        print(f"\n🧪 Testing context extraction with query: '{test_query}'")
+        print("="*60)
+        
+        try:
+            # Test context extraction
+            context = self.get_context_for_query(test_query)
+            
+            # Test answer generation  
+            answer = self.answer(test_query)
+            
+            # Verify both use same context
+            context_match = (self.last_context == context)
+            
+            results = {
+                'query': test_query,
+                'context_length': len(context),
+                'context_preview': context[:300] + "..." if len(context) > 300 else context,
+                'answer_preview': answer[:200] + "..." if len(answer) > 200 else answer,
+                'classification': self.last_classification,
+                'docs_retrieved': len(self.last_retrieved_docs) if self.last_retrieved_docs else 0,
+                'context_match': context_match,
+                'context_empty': len(context.strip()) == 0,
+                'success': len(context.strip()) > 0 and context_match
+            }
+            
+            print(f"✅ Test Results:")
+            for key, value in results.items():
+                print(f"   {key}: {value}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"❌ Test failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {'error': str(e), 'success': False}
 
 
 # Argument parsing functions

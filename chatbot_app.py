@@ -1,16 +1,19 @@
 """
-Multi-RAG Chatbot Application with Document Upload and Message History
+Multi-RAG Chatbot Application with Document Upload, Message History, and Comprehensive Evaluation
 
 This application provides a web-based interface for testing different RAG techniques:
 - Adaptive RAG
 - CRAG (Corrective RAG)
 - Document Augmentation RAG
 - Basic RAG
+- Explainable Retrieval RAG
 
 Features:
 - Upload documents (PDF, CSV, TXT, JSON, DOCX, XLSX)
 - Choose RAG technique from dropdown
 - Message history with technique tracking
+- Comprehensive evaluation framework with user feedback and automated metrics
+- Analytics dashboard for comparing technique performance
 - Elegant, responsive UI
 """
 
@@ -18,9 +21,12 @@ import streamlit as st
 import os
 import tempfile
 import json
+import time
+import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Any
 import uuid
+import sqlite3
 
 # Import our RAG systems
 from adaptive_rag import AdaptiveRAG
@@ -29,6 +35,171 @@ from document_augmentation import DocumentProcessor, SentenceTransformerEmbeddin
 from helper_functions import encode_document, replace_t_with_space
 from explainable_retrieval import ExplainableRAGMethod
 
+# Import evaluation framework
+from evaluation_framework import EvaluationManager, UserFeedback
+from analytics_dashboard import display_analytics_dashboard
+
+# === PERSISTENT CHAT STORAGE ===
+def init_chat_database():
+    """Initialize database for persistent chat storage"""
+    conn = sqlite3.connect('chat_history.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            message_id TEXT,
+            message_type TEXT,
+            content TEXT,
+            technique TEXT,
+            query_id TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_chat_message(session_id: str, message_id: str, message_type: str, content: str, technique: str = None, query_id: str = None):
+    """Save chat message to database"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO chat_sessions (session_id, message_id, message_type, content, technique, query_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (session_id, message_id, message_type, content, technique, query_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error saving chat message: {e}")
+
+def load_chat_history(session_id: str):
+    """Load chat history from database"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT message_id, message_type, content, technique, query_id, timestamp
+            FROM chat_sessions 
+            WHERE session_id = ?
+            ORDER BY timestamp
+        ''', (session_id,))
+        
+        messages = []
+        for row in cursor.fetchall():
+            message_id, message_type, content, technique, query_id, timestamp = row
+            message = {
+                'id': message_id,
+                'role': message_type,
+                'content': content,
+                'timestamp': timestamp
+            }
+            if technique:
+                message['technique'] = technique
+            if query_id:
+                message['query_id'] = query_id
+            messages.append(message)
+        
+        conn.close()
+        return messages
+    except Exception as e:
+        print(f"Error loading chat history: {e}")
+        return []
+
+def get_or_create_session_id():
+    """Get existing session ID or create new one"""
+    if 'persistent_session_id' not in st.session_state:
+        st.session_state.persistent_session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(datetime.now()))}"
+    return st.session_state.persistent_session_id
+
+def auto_save_chat():
+    """Auto-save current chat messages"""
+    if 'messages' in st.session_state and st.session_state.messages:
+        session_id = get_or_create_session_id()
+        
+        # Track what we've already saved
+        if 'last_saved_count' not in st.session_state:
+            st.session_state.last_saved_count = 0
+        
+        # Save only new messages
+        new_messages = st.session_state.messages[st.session_state.last_saved_count:]
+        
+        for msg in new_messages:
+            save_chat_message(
+                session_id=session_id,
+                message_id=msg.get('id', str(uuid.uuid4())),
+                message_type=msg['role'],
+                content=msg['content'],
+                technique=msg.get('technique'),
+                query_id=msg.get('query_id')
+            )
+        
+        st.session_state.last_saved_count = len(st.session_state.messages)
+
+def clear_current_session():
+    """Clear current session chat history"""
+    session_id = get_or_create_session_id()
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM chat_sessions WHERE session_id = ?', (session_id,))
+        conn.commit()
+        conn.close()
+        
+        # Clear session state
+        st.session_state.messages = []
+        st.session_state.last_saved_count = 0
+        
+    except Exception as e:
+        print(f"Error clearing session: {e}")
+
+def delete_chat_message(session_id: str, message_id: str):
+    """Delete a specific chat message from database"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM chat_sessions WHERE session_id = ? AND message_id = ?', (session_id, message_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error deleting chat message: {e}")
+
+def delete_conversation_pair(user_message_id: str, assistant_message_id: str = None, query_id: str = None):
+    """Delete a conversation pair (user question + assistant response) and associated ratings"""
+    session_id = get_or_create_session_id()
+    
+    try:
+        # Delete from chat history database
+        delete_chat_message(session_id, user_message_id)
+        if assistant_message_id:
+            delete_chat_message(session_id, assistant_message_id)
+        
+        # Delete from evaluation database if query_id exists
+        if query_id:
+            evaluation_manager = get_evaluation_manager()
+            evaluation_manager.delete_evaluation(query_id)
+        
+        # Remove from session state
+        message_ids_to_delete = [user_message_id]
+        if assistant_message_id:
+            message_ids_to_delete.append(assistant_message_id)
+            
+        st.session_state.messages = [
+            msg for msg in st.session_state.messages 
+            if msg.get('id') not in message_ids_to_delete
+        ]
+        
+        # Update last saved count
+        st.session_state.last_saved_count = len(st.session_state.messages)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error deleting conversation: {e}")
+        return False
+
+# === END PERSISTENT CHAT STORAGE ===
+
 # Configure page
 st.set_page_config(
     page_title="Multi-RAG Chatbot",
@@ -36,6 +207,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize evaluation manager
+@st.cache_resource
+def get_evaluation_manager():
+    """Get or create evaluation manager"""
+    return EvaluationManager()
 
 # Custom CSS for elegant styling
 st.markdown("""
@@ -105,21 +282,48 @@ st.markdown("""
         font-size: 0.8rem;
         font-weight: bold;
     }
-    
-    .sidebar-section {
+      .sidebar-section {
         background: #f8f9fa;
         padding: 1rem;
         border-radius: 8px;
         margin: 1rem 0;
+    }
+    
+    .delete-button {
+        background: #ff4757 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 50% !important;
+        width: 30px !important;
+        height: 30px !important;
+        font-size: 12px !important;
+        cursor: pointer !important;
+        margin-top: 0.5rem !important;
+    }
+    
+    .delete-button:hover {
+        background: #ff3742 !important;
+        transform: scale(1.1) !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Initialize session state
 def initialize_session_state():
-    """Initialize session state variables"""
+    """Initialize session state variables with persistent chat history"""
+    # Initialize chat database
+    init_chat_database()
+    
+    # Get or create persistent session ID
+    session_id = get_or_create_session_id()
+    
+    # Initialize messages with persistent storage
     if 'messages' not in st.session_state:
-        st.session_state.messages = []
+        # Try to load previous chat history
+        saved_messages = load_chat_history(session_id)
+        st.session_state.messages = saved_messages if saved_messages else []
+        st.session_state.last_saved_count = len(st.session_state.messages)
+    
     if 'uploaded_documents' not in st.session_state:
         st.session_state.uploaded_documents = []
     if 'rag_systems' not in st.session_state:
@@ -128,6 +332,15 @@ def initialize_session_state():
         st.session_state.document_content = None
     if 'last_document_hash' not in st.session_state:
         st.session_state.last_document_hash = None
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    if 'pending_feedback' not in st.session_state:
+        st.session_state.pending_feedback = {}
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "Chat"
+    
+    # Update last activity timestamp
+    st.session_state.last_activity = datetime.now()
 
 def save_uploaded_file(uploaded_file):
     """Save uploaded file to temporary directory and return path"""
@@ -261,10 +474,33 @@ def load_rag_system(technique: str, document_paths: List[str] = None):
         return None
 
 def get_rag_response(technique: str, query: str, rag_system):
-    """Get response from the specified RAG system"""
+    """Get response from the specified RAG system and return both response and context"""
     try:
+        context = ""  # Will store retrieved context for evaluation
+        
         if technique == "Adaptive RAG":
-            return rag_system.answer(query)
+            # CRITICAL FIX: Use get_context_for_query() to get the EXACT context used for the answer
+            try:
+                # Get the exact context that will be used for generating the answer
+                context = rag_system.get_context_for_query(query, silent=True)
+                # Generate the answer using the same context
+                response = rag_system.answer(query, silent=True)
+                
+                return response, context
+            except Exception as e:
+                # Fallback to old method if get_context_for_query is not available
+                response = rag_system.answer(query)
+                try:
+                    # Try to extract context from the adaptive system if possible
+                    docs = rag_system.get_relevant_documents(query)
+                    if docs:
+                        context = "\n".join([doc.page_content[:500] for doc in docs[:3]])
+                    else:
+                        context = "No specific document context retrieved"
+                except:
+                    # Fallback if get_relevant_documents is not available
+                    context = "Context from uploaded documents"
+                return response, context
         
         elif technique == "CRAG":
             try:
@@ -278,6 +514,18 @@ def get_rag_response(technique: str, query: str, rag_system):
                 result = rag_system.run(query)
                 st.success("✅ CRAG analysis completed")
                 
+                # Try to extract actual context from CRAG system
+                try:
+                    # Get the documents that CRAG likely used
+                    docs = rag_system.get_relevant_documents(query)
+                    if docs:
+                        context = "\n".join([doc.page_content[:500] for doc in docs[:3]])
+                    else:
+                        context = "CRAG used web search or external sources"
+                except:
+                    # Fallback - extract from result if it contains source information
+                    context = str(result)[:1000] if result else "CRAG context not available"
+                
                 # Add explanation of what CRAG did
                 st.info("""
                 **How CRAG worked for this query:**
@@ -288,7 +536,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 Check the response to see which source(s) were actually used!
                 """)
                 
-                return result
+                return result, context
             except Exception as crag_error:
                 error_msg = str(crag_error)
                 st.error(f"❌ CRAG Error: {error_msg}")
@@ -299,7 +547,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 elif "rate" in error_msg.lower() or "quota" in error_msg.lower():
                     st.warning("⚠️ API rate limit reached. Please wait a moment and try again.")
                 
-                return f"CRAG failed with error: {error_msg}"
+                return f"CRAG failed with error: {error_msg}", ""
         
         elif technique == "Document Augmentation":
             # For document augmentation, we need to retrieve and generate answer
@@ -307,9 +555,10 @@ def get_rag_response(technique: str, query: str, rag_system):
             if docs:
                 from document_augmentation import generate_answer
                 context = docs[0].metadata.get('text', docs[0].page_content)
-                return generate_answer(context, query)
+                response = generate_answer(context, query)
+                return response, context
             else:
-                return "No relevant documents found."
+                return "No relevant documents found.", ""
         
         elif technique == "Basic RAG":
             # Basic similarity search
@@ -317,8 +566,10 @@ def get_rag_response(technique: str, query: str, rag_system):
             if docs:
                 context = "\n".join([doc.page_content for doc in docs])
                 # Simple context-based response
-                return f"Based on the documents:\n\n{context[:500]}..."
-            else:                return "No relevant documents found."
+                response = f"Based on the documents:\n\n{context[:500]}..."
+                return response, context
+            else:
+                return "No relevant documents found.", ""
         
         elif technique == "Explainable Retrieval":
             try:
@@ -330,13 +581,18 @@ def get_rag_response(technique: str, query: str, rag_system):
                 st.write("2. Generating explanations for each retrieved chunk...")
                 st.write("3. Synthesizing a comprehensive answer with reasoning...")
                 
+                # Get detailed results for context
+                detailed_results = rag_system.run(query)
+                context = ""
+                if detailed_results:
+                    context = "\n".join([result['content'] for result in detailed_results])
+                
                 # Use the answer method for a comprehensive response
                 answer = rag_system.answer(query)
                 st.success("✅ Explainable Retrieval completed")
                 
                 # Also show the detailed explanations in an expander
                 with st.expander("🔍 View Detailed Explanations"):
-                    detailed_results = rag_system.run(query)
                     if detailed_results:
                         for i, result in enumerate(detailed_results, 1):
                             st.write(f"**📄 Retrieved Section {i}:**")
@@ -346,7 +602,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                     else:
                         st.write("No detailed explanations available.")
                 
-                return answer
+                return answer, context
                     
             except Exception as er_error:
                 error_msg = str(er_error)
@@ -358,32 +614,140 @@ def get_rag_response(technique: str, query: str, rag_system):
                 elif "rate" in error_msg.lower() or "quota" in error_msg.lower():
                     st.warning("⚠️ API rate limit reached. Please wait a moment and try again.")
                 
-                return f"Explainable Retrieval failed with error: {error_msg}"
-                return "No relevant documents found."
+                return f"Explainable Retrieval failed with error: {error_msg}", ""
                 
     except Exception as e:
-        return f"Error generating response: {str(e)}"
+        return f"Error generating response: {str(e)}", ""
 
-def add_message(role: str, content: str, technique: str = None):
-    """Add message to session state"""
+def add_message(role: str, content: str, technique: str = None, query_id: str = None):
+    """Add message to session state and save to database"""
     message = {
         "id": str(uuid.uuid4()),
         "role": role,
         "content": content,
         "technique": technique,
+        "query_id": query_id,  # For linking with evaluation
         "timestamp": datetime.now().isoformat()
     }
     st.session_state.messages.append(message)
+    
+    # Auto-save to persistent storage
+    auto_save_chat()
 
-def display_message(message: Dict[str, Any]):
-    """Display a single message"""
+def collect_user_feedback(query_id: str, message_id: str):
+    """Collect user feedback for a specific response"""
+    with st.expander("📝 Rate this response", expanded=False):
+        st.write("Help us improve by rating this response:")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            helpfulness = st.slider(
+                "How helpful was this response?",
+                min_value=1, max_value=5, value=3,
+                key=f"helpfulness_{message_id}"
+            )
+            
+            accuracy = st.slider(
+                "How accurate was this response?",
+                min_value=1, max_value=5, value=3,
+                key=f"accuracy_{message_id}"
+            )
+        
+        with col2:
+            clarity = st.slider(
+                "How clear was this response?",
+                min_value=1, max_value=5, value=3,
+                key=f"clarity_{message_id}"
+            )
+            
+            overall_rating = st.slider(
+                "Overall rating",
+                min_value=1, max_value=5, value=3,
+                key=f"overall_{message_id}"
+            )
+        
+        comments = st.text_area(
+            "Additional comments (optional):",
+            key=f"comments_{message_id}",
+            height=100
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("Submit Feedback", key=f"submit_{message_id}"):
+                # Create feedback object
+                feedback = UserFeedback(
+                    helpfulness=helpfulness,
+                    accuracy=accuracy,
+                    clarity=clarity,
+                    overall_rating=overall_rating,
+                    comments=comments,
+                    timestamp=datetime.now().isoformat()
+                )
+                
+                # Submit feedback to evaluation manager
+                evaluation_manager = get_evaluation_manager()
+                evaluation_manager.add_user_feedback(query_id, feedback)
+                
+                st.success("Thank you for your feedback! 🙏")
+                
+                # Remove from pending feedback
+                if query_id in st.session_state.pending_feedback:
+                    del st.session_state.pending_feedback[query_id]
+                
+                time.sleep(1)
+                st.rerun()
+        
+        with col2:
+            if st.button("Skip", key=f"skip_{message_id}"):
+                # Remove from pending feedback without submitting
+                if query_id in st.session_state.pending_feedback:
+                    del st.session_state.pending_feedback[query_id]
+                st.rerun()
+
+def display_message(message: Dict[str, Any], message_index: int = None):
+    """Display a single message with delete functionality"""
     if message["role"] == "user":
-        st.markdown(f"""
-        <div class="message-user">
-            <strong>You:</strong> {message["content"]}
-            <br><small>{datetime.fromisoformat(message["timestamp"]).strftime("%H:%M:%S")}</small>
-        </div>
-        """, unsafe_allow_html=True)
+        col1, col2 = st.columns([0.9, 0.1])
+        with col1:
+            st.markdown(f"""
+            <div class="message-user">
+                <strong>You:</strong> {message["content"]}
+                <br><small>{datetime.fromisoformat(message["timestamp"]).strftime("%H:%M:%S")}</small>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Add delete button for user messages
+            if st.button("🗑️", key=f"delete_user_{message['id']}", help="Delete this question and response"):
+                # Find the corresponding assistant message
+                assistant_message = None
+                if message_index is not None and message_index + 1 < len(st.session_state.messages):
+                    next_message = st.session_state.messages[message_index + 1]
+                    if next_message["role"] == "assistant":
+                        assistant_message = next_message
+                
+                if assistant_message:
+                    # Delete the conversation pair
+                    query_id = assistant_message.get("query_id")
+                    success = delete_conversation_pair(
+                        message["id"], 
+                        assistant_message["id"], 
+                        query_id
+                    )
+                    if success:
+                        st.success("Question and response deleted!")
+                        time.sleep(0.5)
+                        st.rerun()
+                else:
+                    # Delete just the user message if no assistant response
+                    success = delete_conversation_pair(message["id"], None, None)
+                    if success:
+                        st.success("Question deleted!")
+                        time.sleep(0.5)
+                        st.rerun()
     else:
         technique_badge = f'<span class="technique-badge">{message["technique"]}</span>' if message["technique"] else ''
         st.markdown(f"""
@@ -393,6 +757,11 @@ def display_message(message: Dict[str, Any]):
             <br><small>{datetime.fromisoformat(message["timestamp"]).strftime("%H:%M:%S")}</small>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Show feedback collection for bot messages that have a query_id and are pending feedback
+        query_id = message.get("query_id")
+        if query_id and query_id in st.session_state.pending_feedback:
+            collect_user_feedback(query_id, message["id"])
 
 def create_multi_document_basic_rag(document_paths: List[str], chunk_size=1000, chunk_overlap=200):
     """
@@ -479,11 +848,33 @@ def main():
     """Main application function"""
     initialize_session_state()
     
+    # Get evaluation manager
+    evaluation_manager = get_evaluation_manager()
+    
+    # Navigation
+    st.sidebar.title("🧭 Navigation")
+    page = st.sidebar.radio(
+        "Choose page:",
+        ["💬 Chat", "📊 Analytics Dashboard"],
+        index=0 if st.session_state.current_page == "Chat" else 1
+    )
+    
+    # Update current page
+    if page == "💬 Chat":
+        st.session_state.current_page = "Chat"
+    else:
+        st.session_state.current_page = "Analytics"
+    
+    if st.session_state.current_page == "Analytics":
+        # Show analytics dashboard
+        display_analytics_dashboard(evaluation_manager)
+        return
+    
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>🤖 Multi-RAG Chatbot</h1>
-        <p>Compare different RAG techniques with your documents</p>
+        <h1>🤖 Multi-RAG Chatbot with Evaluation</h1>
+        <p>Compare different RAG techniques with your documents and get comprehensive analytics</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -541,39 +932,120 @@ def main():
         }
         
         st.markdown(f"""
-        <div class="technique-card">
-            <strong>{selected_technique}</strong><br>
+        <div class="technique-card">            <strong>{selected_technique}</strong><br>
             <small>{technique_descriptions[selected_technique]}</small>
         </div>
         """, unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
+          # Clear history button        # Session Management
+        st.markdown("### 💾 Session Management")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🗑️ Clear Chat"):
+                clear_current_session()
+                st.success("✅ Chat cleared and saved!")
+                st.rerun()
         
-        # Clear history button
-        if st.button("🗑️ Clear History"):
-            st.session_state.messages = []
-            st.rerun()
-    
-    # Main chat interface
+        with col2:
+            if st.button("🔄 Recover Last"):
+                # Load the most recent session
+                try:
+                    conn = sqlite3.connect('chat_history.db')
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        SELECT DISTINCT session_id FROM chat_sessions 
+                        ORDER BY timestamp DESC LIMIT 1
+                    ''')
+                    
+                    result = cursor.fetchone()
+                    if result and result[0] != get_or_create_session_id():
+                        latest_session = result[0]
+                        recovered_messages = load_chat_history(latest_session)
+                        
+                        if recovered_messages:
+                            st.session_state.messages = recovered_messages
+                            st.session_state.last_saved_count = len(recovered_messages)
+                            st.success(f"🔄 Recovered {len(recovered_messages)} messages!")
+                            st.rerun()
+                        else:
+                            st.warning("No messages to recover")
+                    else:
+                        st.warning("No previous sessions found")
+                    
+                    conn.close()
+                except Exception as e:
+                    st.error(f"Error recovering session: {e}")
+        
+        # Conversation Management Help
+        if st.session_state.messages:
+            st.markdown("### 🗂️ Individual Message Management")
+            st.info("""
+            **💡 Tip:** Click the 🗑️ button next to any question to delete that specific question and its response, including any ratings you gave.
+            
+            This is useful for:
+            - Removing test questions
+            - Cleaning up incorrect queries
+            - Managing chat history length
+            """)
+            
+            # Show current stats
+            user_messages = [m for m in st.session_state.messages if m["role"] == "user"]
+            assistant_messages = [m for m in st.session_state.messages if m["role"] == "assistant"]
+            
+            st.markdown(f"""
+            **Current Session:**
+            - 💬 {len(user_messages)} questions asked
+            - 🤖 {len(assistant_messages)} responses given
+            - 📊 {len([m for m in assistant_messages if m.get('query_id')])} responses available for rating
+            """)
+        
+        # Show session info
+        if st.session_state.messages:
+            session_id = get_or_create_session_id()
+            st.caption(f"💬 {len(st.session_state.messages)} messages")
+            st.caption(f"🔑 Session: {session_id[-8:]}")
+        
+        st.markdown("### 📊 Analytics")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📊 Clear Analytics"):
+                # Import the clear function
+                from analytics_dashboard import perform_database_reset
+                
+                if st.session_state.get('confirm_clear_analytics_sidebar', False):
+                    perform_database_reset(evaluation_manager)
+                    st.session_state.confirm_clear_analytics_sidebar = False
+                else:
+                    st.session_state.confirm_clear_analytics_sidebar = True
+                    st.warning("⚠️ Click again to confirm clearing ALL analytics data")
+      # Main chat interface
     col1, col2 = st.columns([3, 1])
     
     with col1:
-        st.header("💬 Chat")
-        
-        # Display messages
+        # Header with session status
+        col_header, col_status = st.columns([3, 1])
+        with col_header:
+            st.header("💬 Chat")
+        with col_status:
+            if st.session_state.messages:
+                st.caption(f"💾 Auto-saved ({len(st.session_state.messages)} msgs)")
+            else:
+                st.caption("💾 Session ready")
+          # Display messages
         if st.session_state.messages:
-            for message in st.session_state.messages:
-                display_message(message)
+            for index, message in enumerate(st.session_state.messages):
+                display_message(message, index)
         else:
             st.info("👋 Welcome! Upload some documents and ask me questions using different RAG techniques.")
-        
         # Chat input
         query = st.chat_input("Ask a question about your documents...")
         
         if query:
             # Add user message
             add_message("user", query)
-              # Load RAG system if not already loaded or documents changed
+            
+            # Load RAG system if not already loaded or documents changed
             if should_reload_rag_system(selected_technique, st.session_state.uploaded_documents):
                 current_hash = get_document_hash(st.session_state.uploaded_documents)
                 if current_hash != st.session_state.last_document_hash:
@@ -586,28 +1058,65 @@ def main():
                     else:
                         st.error(f"Failed to load {selected_technique}")
                         st.stop()
-            
-            # Get response
+              # Get response with timing
             rag_system = st.session_state.rag_systems[selected_technique]
-            with st.spinner(f"Generating response with {selected_technique}..."):
-                response = get_rag_response(selected_technique, query, rag_system)
+            start_time = time.time()
             
-            # Add bot response
-            add_message("assistant", response, selected_technique)
+            with st.spinner(f"Generating response with {selected_technique}..."):
+                response, context = get_rag_response(selected_technique, query, rag_system)
+            
+            processing_time = time.time() - start_time
+            
+            # Evaluate the response (Phase 2 & 3: Automated evaluation and storage)
+            document_sources = [os.path.basename(doc) for doc in st.session_state.uploaded_documents]
+            query_id = evaluation_manager.evaluate_rag_response(
+                query=query,
+                response=response,
+                technique=selected_technique,
+                document_sources=document_sources,
+                context=context,  # Now passing the actual retrieved context
+                processing_time=processing_time,
+                session_id=st.session_state.session_id
+            )
+            
+            # Add bot response with query_id for feedback linking
+            add_message("assistant", response, selected_technique, query_id)
+            
+            # Mark this response as pending feedback (Phase 1: User feedback collection)
+            st.session_state.pending_feedback[query_id] = True
             
             # Rerun to update the display
             st.rerun()
     
     with col2:
         st.header("📊 Statistics")
-        
-        # Message statistics
+          # Message statistics
         total_messages = len(st.session_state.messages)
         user_messages = len([m for m in st.session_state.messages if m["role"] == "user"])
         
         st.metric("Total Messages", total_messages)
         st.metric("Questions Asked", user_messages)
         st.metric("Documents Loaded", len(st.session_state.uploaded_documents))
+        
+        # Evaluation metrics preview
+        st.subheader("📊 Performance Preview")
+        comparison_data = evaluation_manager.get_technique_comparison()
+        
+        if comparison_data:
+            # Show current session performance
+            for technique, data in comparison_data.items():
+                if data['total_queries'] > 0:
+                    avg_rating = data.get('avg_user_rating', 0)
+                    if avg_rating and not pd.isna(avg_rating):
+                        st.metric(
+                            f"{technique} Rating", 
+                            f"{avg_rating:.1f}/5",
+                            help=f"Average user rating based on {data.get('feedback_count', 0)} feedback(s)"
+                        )
+            
+            st.info("💡 Visit the Analytics Dashboard for detailed performance insights!")
+        else:
+            st.info("📊 Performance metrics will appear here after you start chatting!")
         
         # Technique usage
         if st.session_state.messages:

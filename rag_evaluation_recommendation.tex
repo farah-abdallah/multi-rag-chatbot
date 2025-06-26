@@ -1,0 +1,132 @@
+% RAG Techniques Evaluation and Recommendation Report
+% Internship: SAUGO360
+
+\section{Evaluation Metrics: Definitions and Mathematical Formulation}
+
+We evaluated four Retrieval-Augmented Generation (RAG) techniques: Adaptive RAG, Document Augmentation, CRAG, and Explainable Retrieval. The following metrics were used to assess their performance:
+
+\subsection{Relevance}
+\textbf{Definition:} Measures how well the response addresses the user's query, based on keyword overlap and response length.
+\begin{itemize}
+    \item \textbf{Jaccard Similarity:}
+    \[
+    J(Q, R) = \frac{|Q \cap R|}{|Q \cup R|}
+    \]
+    \item \textbf{Length Factor:}
+    \[
+    L = \min\left(1.0, \frac{|R_{words}|}{|Q_{words}| \times 10}\right)
+    \]
+    \item \textbf{Combined Relevance Score:}
+    \[
+    \text{Relevance} = 0.7 \times J(Q, R) + 0.3 \times L
+    \]
+\end{itemize}
+
+\subsection{Faithfulness}
+\textbf{Definition:} Quantifies how much of the response is directly supported by the provided context, penalizing hallucinations.
+\begin{itemize}
+    \item \textbf{Support Ratio:}
+    \[
+    S = \frac{|R \cap C|}{|R|}
+    \]
+    \item \textbf{Hallucination Ratio:}
+    \[
+    H = \frac{|R - C|}{|R|}
+    \]
+    \item \textbf{Adjusted Support Ratio:}
+    \[
+    S' = \begin{cases}
+        S \times 0.5 & \text{if } H > 0.7 \\
+        S \times 0.7 & \text{if } H > 0.5 \\
+        S & \text{otherwise}
+    \end{cases}
+    \]
+    \item \textbf{Faithfulness Score:}
+    \[
+    \text{Faithfulness} =
+    \begin{cases}
+        \min(0.85, 0.65 + S' \times 0.2) & S' > 0.8 \\
+        0.55 + S' \times 0.2 & S' > 0.6 \\
+        0.35 + S' \times 0.4 & S' > 0.4 \\
+        0.25 + S' \times 0.5 & S' > 0.2 \\
+        \max(0.15, S' \times 1.5) & \text{otherwise}
+    \end{cases}
+    \]
+\end{itemize}
+
+\subsection{Completeness}
+\textbf{Definition:} Measures whether the response fully answers the query, considering expected length and presence of summary/conclusion indicators.
+\begin{itemize}
+    \item \textbf{Expected Minimum Length:}
+    \[
+    E = \begin{cases}
+        10 & q_c = 0 \\
+        \max(20, q_c \times 12) & q_c > 0
+    \end{cases}
+    \]
+    \item \textbf{Base Score:}
+    \[
+    B =
+    \begin{cases}
+        0.8 & |R_{words}| \geq 1.5E \\
+        0.6 & |R_{words}| \geq E \\
+        0.3 + \frac{|R_{words}|}{E} \times 0.3 & \text{otherwise}
+    \end{cases}
+    \]
+    \item \textbf{Adjustments:}
+    \begin{itemize}
+        \item If response contains conclusion indicators: $B = \min(1.0, B + 0.15)$
+        \item If response contains partial/incomplete indicators: $B = \max(0.1, B - 0.1)$
+        \item For explanatory queries, if response contains stepwise indicators: $B = \min(1.0, B + 0.1)$, else $B = \max(0.2, B - 0.2)$
+    \end{itemize}
+    \item \textbf{Final Score:}
+    \[
+    \text{Completeness} = \min(0.95, \max(0.1, B))
+    \]
+\end{itemize}
+
+\subsection{Semantic Similarity}
+\textbf{Definition:} Measures the cosine similarity between the embeddings of the query and the response.
+\[
+\text{Semantic Similarity} = \cos(\vec{q}, \vec{r}) = \frac{\vec{q} \cdot \vec{r}}{\|\vec{q}\| \|\vec{r}\|}
+\]
+
+\section{Variation of Scores Across Three Documents}
+
+We tested each RAG technique on three different documents ("Understanding Climate Change", "Somalia Flood Exposure Methodology Note", and "Importance of Sleep"), each with 10 distinct questions. The following table summarizes the average scores for each technique across all documents:
+
+\begin{center}
+\begin{tabular}{|l|c|c|c|c|c|c|}
+\hline
+\textbf{Technique} & \textbf{Avg Relevance} & \textbf{Avg Faithfulness} & \textbf{Avg Completeness} & \textbf{Avg Semantic Sim.} & \textbf{Avg Time (s)} & \textbf{Avg Length} \\
+\hline
+Adaptive RAG & 0.457 & 0.562 & 0.552 & 0.621 & 18.578 & 302.1 \\
+CRAG & 0.446 & 0.889 & 0.628 & 0.712 & 6.998 & 358.9 \\
+Document Augmentation & 0.353 & 0.391 & 0.570 & 0.692 & 1.829 & 306.0 \\
+Explainable Retrieval & 0.322 & 0.254 & 0.816 & 0.718 & 13.453 & 1445.3 \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Discussion of Score Variation}
+
+The results show that all techniques experienced a drop in relevance and faithfulness when tested on new documents, reflecting the challenge of adapting to different content and structure. CRAG consistently achieved the highest faithfulness, indicating strong grounding in the source context. Adaptive RAG maintained a balance across metrics, while Document Augmentation and Explainable Retrieval tended to provide more complete or verbose answers, sometimes at the expense of faithfulness and relevance. The variation in scores highlights the importance of document quality and retrieval effectiveness in RAG systems.
+
+\section{Best RAG Technique Recommendation}
+
+Based on the evaluation metrics across all documents, \textbf{CRAG} is the recommended technique for most use cases. It consistently delivers the highest faithfulness, ensuring that answers are well-grounded in the source material, and maintains strong semantic similarity and completeness. While its relevance is similar to Adaptive RAG, its superior faithfulness makes it the most reliable choice for factual and context-sensitive applications.
+
+\section{Recommendation for a Hybrid Approach}
+
+For optimal performance, we recommend a hybrid approach combining \textbf{CRAG} and \textbf{Adaptive RAG}:
+\begin{itemize}
+    \item Use \textbf{CRAG} for queries requiring strict factual accuracy and grounding in the source document.
+    \item Use \textbf{Adaptive RAG} for more conversational or summary-style answers, or when user-friendliness is prioritized.
+    \item Optionally, incorporate \textbf{Document Augmentation} for users who request additional details, clearly indicating which parts are directly grounded and which are augmented.
+\end{itemize}
+
+This approach allows users to select between factual, conversational, and in-depth answers, leveraging the strengths of each technique. The system can present the most faithful answer by default, with options to expand or view alternative styles as needed.
+
+\section{Conclusion}
+
+The evaluation demonstrates that CRAG is the most robust RAG technique for faithful, context-grounded answers across diverse documents. A hybrid system combining CRAG and Adaptive RAG can further enhance user experience by balancing accuracy, relevance, and usability.

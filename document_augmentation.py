@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import io
 from langchain.docstore.document import Document
 from langchain_community.vectorstores import FAISS
 from enum import Enum
@@ -9,6 +10,15 @@ import google.generativeai as genai
 from typing import Any, Dict, List, Tuple
 import argparse
 import glob
+
+# Import API key manager for rotation
+try:
+    from api_key_manager import get_api_manager
+    API_MANAGER_AVAILABLE = True
+    print("🔑 Document Augmentation API key rotation manager loaded")
+except ImportError:
+    API_MANAGER_AVAILABLE = False
+    print("⚠️ Document Augmentation API key manager not found - using single key mode")
 
 # Multi-format document loaders
 from langchain_community.document_loaders import (
@@ -20,16 +30,102 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure Google Gemini API
-api_key = os.getenv('GOOGLE_API_KEY')
-if api_key:
-    genai.configure(api_key=api_key)
+# Set up API key management
+if API_MANAGER_AVAILABLE:
+    try:
+        api_manager = get_api_manager()
+        print(f"🎯 Document Augmentation API Manager Status: {api_manager.get_status()}")
+    except Exception as e:
+        print(f"⚠️ Document Augmentation API Manager initialization failed: {e}")
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if api_key:
+            genai.configure(api_key=api_key)
+            print("🔑 Document Augmentation using fallback single API key")
+        else:
+            raise ValueError("GOOGLE_API_KEY not found in environment variables")
 else:
-    raise ValueError("GOOGLE_API_KEY not found in environment variables")
+    # Fallback to single key
+    api_key = os.getenv('GOOGLE_API_KEY')
+    if api_key:
+        genai.configure(api_key=api_key)
+        print("🔑 Document Augmentation using single API key mode")
+    else:
+        raise ValueError("GOOGLE_API_KEY not found in environment variables")
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))  # Add the parent directory to the path
 
 from helper_functions import *
+
+
+class SimpleGeminiLLM:
+    """Simple Gemini LLM wrapper with API key rotation support"""
+    
+    def __init__(self, model_name="gemini-1.5-flash", silent=False):
+        self.model_name = model_name
+        self.silent = silent
+        
+        # Try to use API manager if available, otherwise fall back to single key
+        global api_manager
+        if API_MANAGER_AVAILABLE and 'api_manager' in globals():
+            self.use_rotation = True
+            if not self.silent:
+                print(f"🔄 Document Augmentation SimpleGeminiLLM initialized with key rotation for {model_name}")
+        else:
+            self.use_rotation = False
+            # Configure genai with single key
+            api_key = os.getenv('GOOGLE_API_KEY')
+            if api_key:
+                genai.configure(api_key=api_key)
+                if not self.silent:
+                    print(f"🔑 Document Augmentation SimpleGeminiLLM initialized with single key for {model_name}")
+            else:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+    
+    def generate_content(self, prompt, max_retries=3):
+        """Generate content with automatic key rotation on quota errors"""
+        
+        if not self.use_rotation:
+            # Single key mode
+            model = genai.GenerativeModel(self.model_name)
+            return model.generate_content(prompt)
+        
+        # Key rotation mode
+        for attempt in range(max_retries):
+            try:
+                # Get current API key and configure genai
+                current_key = api_manager.get_current_key()
+                genai.configure(api_key=current_key)
+                
+                model = genai.GenerativeModel(self.model_name)
+                response = model.generate_content(prompt)
+                
+                # Successful generation
+                return response
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Check for quota/rate limit errors
+                if any(err in error_msg for err in ['quota', 'rate limit', '429', 'resource_exhausted']):
+                    if not self.silent:
+                        print(f"⚠️ Document Augmentation Quota/rate limit hit on attempt {attempt + 1}: {e}")
+                    
+                    if attempt < max_retries - 1:  # Not the last attempt
+                        if api_manager.rotate_key():
+                            if not self.silent:
+                                print(f"🔄 Document Augmentation Rotated to new API key, retrying...")
+                            continue
+                        else:
+                            if not self.silent:
+                                print("❌ Document Augmentation No more API keys available for rotation")
+                            raise Exception("All API keys exhausted due to quota limits")
+                    else:
+                        raise Exception(f"Max retries ({max_retries}) exceeded due to quota limits")
+                else:
+                    # Non-quota error, don't retry
+                    raise e
+        
+        raise Exception(f"Failed to generate content after {max_retries} attempts")
 
 
 class QuestionGeneration(Enum):
@@ -47,10 +143,8 @@ FRAGMENT_OVERLAP_TOKENS = 16
 QUESTION_GENERATION = QuestionGeneration.DOCUMENT_LEVEL
 QUESTIONS_PER_DOCUMENT = 40
 
-
-# Configure Gemini API
-os.environ["GOOGLE_API_KEY"] = os.getenv('GOOGLE_API_KEY')
-genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+# Initialize the LLM with key rotation support
+llm = SimpleGeminiLLM("gemini-1.5-flash", silent=False)
 
 
 class SentenceTransformerEmbeddings:
@@ -94,9 +188,8 @@ Generate {QUESTIONS_PER_DOCUMENT} questions, one per line, numbered 1-{QUESTIONS
 """
     
     try:
-        # Use direct Gemini SDK
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        # Use SimpleGeminiLLM with key rotation
+        response = llm.generate_content(prompt_text)
         return parse_questions_from_response(response.text, QUESTIONS_PER_DOCUMENT)
         
     except Exception as e:
@@ -115,9 +208,8 @@ Question: {question}
 Answer:"""
     
     try:
-        # Use direct Gemini SDK
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        # Use SimpleGeminiLLM with key rotation
+        response = llm.generate_content(prompt_text)
         return response.text
     except Exception as e:
         print(f"Error generating answer: {e}")
@@ -311,8 +403,7 @@ Generate {num_questions} data-focused questions, one per line, numbered 1-{num_q
 """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        response = llm.generate_content(prompt_text)
         return parse_questions_from_response(response.text, num_questions)
     except Exception as e:
         print(f"Error generating data questions: {e}")
@@ -336,8 +427,7 @@ Generate {num_questions} structural questions, one per line, numbered 1-{num_que
 """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        response = llm.generate_content(prompt_text)
         return parse_questions_from_response(response.text, num_questions)
     except Exception as e:
         print(f"Error generating structural questions: {e}")
@@ -361,8 +451,7 @@ Generate {num_questions} conceptual questions, one per line, numbered 1-{num_que
 """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        response = llm.generate_content(prompt_text)
         return parse_questions_from_response(response.text, num_questions)
     except Exception as e:
         print(f"Error generating conceptual questions: {e}")
@@ -386,8 +475,7 @@ Generate {num_questions} explanatory questions, one per line, numbered 1-{num_qu
 """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt_text)
+        response = llm.generate_content(prompt_text)
         return parse_questions_from_response(response.text, num_questions)
     except Exception as e:
         print(f"Error generating explanatory questions: {e}")

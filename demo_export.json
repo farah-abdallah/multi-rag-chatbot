@@ -1,0 +1,121 @@
+{
+  "export_timestamp": "2025-06-20T10:35:58.831555",
+  "technique_comparison": {
+    "Adaptive RAG": {
+      "technique": "Adaptive RAG",
+      "total_queries": 1,
+      "avg_relevance": 0.5,
+      "avg_faithfulness": 0.5,
+      "avg_completeness": 0.5,
+      "avg_semantic_similarity": 0.7415105700492859,
+      "avg_processing_time": 1.5,
+      "avg_response_length": 269.0,
+      "avg_user_rating": 5.0,
+      "feedback_count": 1
+    },
+    "CRAG": {
+      "technique": "CRAG",
+      "total_queries": 1,
+      "avg_relevance": 0.5,
+      "avg_faithfulness": 0.5,
+      "avg_completeness": 0.5,
+      "avg_semantic_similarity": 0.743627667427063,
+      "avg_processing_time": 1.5,
+      "avg_response_length": 235.0,
+      "avg_user_rating": 4.0,
+      "feedback_count": 1
+    },
+    "Explainable Retrieval": {
+      "technique": "Explainable Retrieval",
+      "total_queries": 1,
+      "avg_relevance": 0.5,
+      "avg_faithfulness": 0.5,
+      "avg_completeness": 0.5,
+      "avg_semantic_similarity": 0.8146102428436279,
+      "avg_processing_time": 1.5,
+      "avg_response_length": 204.0,
+      "avg_user_rating": 5.0,
+      "feedback_count": 1
+    }
+  },
+  "performance_history": [
+    {
+      "query_id": "46531d368164c17ae815bbea8aec03ab",
+      "query": "What is climate change?",
+      "response": "Climate change refers to long-term shifts in global temperatures and weather patterns. While climate variations are natural, scientific evidence shows that human activities, particularly burning fossil fuels, have been the main driver of climate change since the 1800s.",
+      "technique": "Adaptive RAG",
+      "document_sources": "[\"Understanding_Climate_Change.pdf\"]",
+      "session_id": "demo_session",
+      "relevance_score": 0.5,
+      "faithfulness_score": 0.5,
+      "completeness_score": 0.5,
+      "semantic_similarity": 0.7415105700492859,
+      "response_length": 269,
+      "processing_time": 1.5,
+      "metrics_timestamp": "2025-06-20T10:35:58.480432",
+      "helpfulness": 5,
+      "accuracy": 4,
+      "clarity": 5,
+      "overall_rating": 5,
+      "feedback_comments": "Excellent explanation of climate change!",
+      "feedback_timestamp": "2025-06-20T10:35:58.790671",
+      "created_at": "2025-06-20 07:35:58"
+    },
+    {
+      "query_id": "47032ab607a3a61decbf7d2002d2742a",
+      "query": "How does AI work?",
+      "response": "Artificial Intelligence (AI) works by using algorithms and computational models to simulate human intelligence. Machine learning, a subset of AI, enables systems to learn and improve from experience without being explicitly programmed.",
+      "technique": "CRAG",
+      "document_sources": "[\"ai_basics.pdf\"]",
+      "session_id": "demo_session",
+      "relevance_score": 0.5,
+      "faithfulness_score": 0.5,
+      "completeness_score": 0.5,
+      "semantic_similarity": 0.743627667427063,
+      "response_length": 235,
+      "processing_time": 1.5,
+      "metrics_timestamp": "2025-06-20T10:35:58.648408",
+      "helpfulness": 4,
+      "accuracy": 3,
+      "clarity": 4,
+      "overall_rating": 4,
+      "feedback_comments": "Good AI explanation, could be more detailed.",
+      "feedback_timestamp": "2025-06-20T10:35:58.790671",
+      "created_at": "2025-06-20 07:35:58"
+    },
+    {
+      "query_id": "592f8fe52330562423685c470cbc5e04",
+      "query": "What are renewable energy sources?",
+      "response": "Renewable energy sources include solar, wind, hydroelectric, geothermal, and biomass energy. These sources naturally replenish themselves and produce minimal environmental impact compared to fossil fuels.",
+      "technique": "Explainable Retrieval",
+      "document_sources": "[\"energy_report.pdf\"]",
+      "session_id": "demo_session",
+      "relevance_score": 0.5,
+      "faithfulness_score": 0.5,
+      "completeness_score": 0.5,
+      "semantic_similarity": 0.8146102428436279,
+      "response_length": 204,
+      "processing_time": 1.5,
+      "metrics_timestamp": "2025-06-20T10:35:58.718540",
+      "helpfulness": 5,
+      "accuracy": 5,
+      "clarity": 4,
+      "overall_rating": 5,
+      "feedback_comments": "Very helpful renewable energy overview.",
+      "feedback_timestamp": "2025-06-20T10:35:58.790671",
+      "created_at": "2025-06-20 07:35:58"
+    }
+  ],
+  "summary": {
+    "total_evaluations": 3,
+    "techniques_evaluated": [
+      "Adaptive RAG",
+      "CRAG",
+      "Explainable Retrieval"
+    ],
+    "evaluation_period": {
+      "start": "2025-06-20 07:35:58",
+      "end": "2025-06-20 07:35:58"
+    }
+  }
+}

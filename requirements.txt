@@ -3,3 +3,12 @@ langchain-google-genai
 langchain-community
 faiss-cpu
 python-dotenv
+streamlit
+sentence-transformers
+plotly
+pandas
+numpy
+scikit-learn
+google-generativeai
+langchain-huggingface
+langchain-text-splitters

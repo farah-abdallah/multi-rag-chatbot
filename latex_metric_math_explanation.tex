@@ -1,0 +1,113 @@
+% Evaluation Metrics: Mathematical Definitions
+% This section provides the mathematical details for each metric used in the RAG evaluation framework.
+
+\section{Evaluation Metrics: Mathematical Definitions}
+
+\subsection{Relevance}
+\textbf{Definition:} Relevance measures how well the response addresses the user's query, based on keyword overlap and response length.
+
+\textbf{Mathematical Formula:}
+Let $Q$ be the set of unique words in the query, and $R$ the set of unique words in the response.
+\begin{itemize}
+    \item \textbf{Jaccard Similarity:}
+    \[
+    J(Q, R) = \frac{|Q \cap R|}{|Q \cup R|}
+    \]
+    \item \textbf{Length Factor:}
+    \[
+    L = \min\left(1.0, \frac{|R_{words}|}{|Q_{words}| \times 10}\right)
+    \]
+    where $|R_{words}|$ is the number of words in the response, and $|Q_{words}|$ is the number of words in the query.
+    \item \textbf{Combined Relevance Score:}
+    \[
+    \text{Relevance} = 0.7 \times J(Q, R) + 0.3 \times L
+    \]
+    The score is capped at 1.0.
+\end{itemize}
+
+\subsection{Faithfulness}
+\textbf{Definition:} Faithfulness quantifies how much of the response is directly supported by the provided context, penalizing hallucinations.
+
+\textbf{Mathematical Formula:}
+Let $C$ be the set of meaningful words in the context (after removing stopwords), and $R$ the set of meaningful words in the response.
+\begin{itemize}
+    \item \textbf{Support Ratio:}
+    \[
+    S = \frac{|R \cap C|}{|R|}
+    \]
+    \item \textbf{Hallucination Ratio:}
+    \[
+    H = \frac{|R - C|}{|R|}
+    \]
+    \item \textbf{Adjusted Support Ratio:}
+    \[
+    S' = \begin{cases}
+        S \times 0.5 & \text{if } H > 0.7 \\
+        S \times 0.7 & \text{if } H > 0.5 \\
+        S & \text{otherwise}
+    \end{cases}
+    \]
+    \item \textbf{Faithfulness Score:}
+    The final score is mapped to a range using:
+    \[
+    \text{Faithfulness} =
+    \begin{cases}
+        \min(0.85, 0.65 + S' \times 0.2) & S' > 0.8 \\
+        0.55 + S' \times 0.2 & S' > 0.6 \\
+        0.35 + S' \times 0.4 & S' > 0.4 \\
+        0.25 + S' \times 0.5 & S' > 0.2 \\
+        \max(0.15, S' \times 1.5) & \text{otherwise}
+    \end{cases}
+    \]
+\end{itemize}
+
+\subsection{Completeness}
+\textbf{Definition:} Completeness measures whether the response fully answers the query, considering expected length and presence of summary/conclusion indicators.
+
+\textbf{Mathematical Formula:}
+Let $Q$ be the query, $R$ the response, and $q_c$ the number of question words in $Q$.
+\begin{itemize}
+    \item \textbf{Expected Minimum Length:}
+    \[
+    E = \begin{cases}
+        10 & q_c = 0 \\
+        \max(20, q_c \times 12) & q_c > 0
+    \end{cases}
+    \]
+    \item \textbf{Base Score:}
+    \[
+    B =
+    \begin{cases}
+        0.8 & |R_{words}| \geq 1.5E \\
+        0.6 & |R_{words}| \geq E \\
+        0.3 + \frac{|R_{words}|}{E} \times 0.3 & \text{otherwise}
+    \end{cases}
+    \]
+    \item \textbf{Adjustments:}
+    \begin{itemize}
+        \item If response contains conclusion indicators: $B = \min(1.0, B + 0.15)$
+        \item If response contains partial/incomplete indicators: $B = \max(0.1, B - 0.1)$
+        \item For explanatory queries, if response contains stepwise indicators: $B = \min(1.0, B + 0.1)$, else $B = \max(0.2, B - 0.2)$
+    \end{itemize}
+    \item \textbf{Final Score:}
+    \[
+    \text{Completeness} = \min(0.95, \max(0.1, B))
+    \]
+\end{itemize}
+
+\subsection{Semantic Similarity}
+\textbf{Definition:} Semantic similarity measures the cosine similarity between the embeddings of the query and the response.
+
+\textbf{Mathematical Formula:}
+Let $\vec{q}$ and $\vec{r}$ be the embedding vectors for the query and response, respectively.
+\[
+\text{Semantic Similarity} = \cos(\vec{q}, \vec{r}) = \frac{\vec{q} \cdot \vec{r}}{\|\vec{q}\| \|\vec{r}\|}
+\]
+
+\subsection{Other Metrics}
+\begin{itemize}
+    \item \textbf{Response Length:} $|R_{words}|$
+    \item \textbf{Processing Time:} Time taken to generate the response (in seconds).
+\end{itemize}
+
+These formulas ensure that each metric is computed in a robust, interpretable, and reproducible way, supporting both quantitative and qualitative comparison of RAG techniques.

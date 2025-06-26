@@ -14,6 +14,15 @@ from llama_index.core.base.llms.types import CompletionResponse, LLMMetadata, Ch
 from typing import Any, Sequence, List, Union
 from llama_index.core.node_parser import SentenceSplitter
 
+# Import API key manager for rotation
+try:
+    from api_key_manager import get_api_manager
+    API_MANAGER_AVAILABLE = True
+    print("🔑 Choose Chunk Size API key rotation manager loaded")
+except ImportError:
+    API_MANAGER_AVAILABLE = False
+    print("⚠️ Choose Chunk Size API key manager not found - using single key mode")
+
 # Multi-format document loaders
 from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, CSVLoader, JSONLoader,
