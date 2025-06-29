@@ -2,7 +2,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.document_loaders import TextLoader, CSVLoader, JSONLoader
 from langchain_community.document_loaders import UnstructuredWordDocumentLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from pydantic import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
@@ -72,8 +72,8 @@ def encode_pdf(path, chunk_size=1000, chunk_overlap=200):
     texts = text_splitter.split_documents(documents)
     cleaned_texts = replace_t_with_space(texts)
 
-    # Create embeddings and vector store using local embeddings
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # Create embeddings and vector store using Gemini (GoogleGenerativeAIEmbeddings)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vectorstore = FAISS.from_documents(cleaned_texts, embeddings)
 
     return vectorstore
@@ -120,7 +120,7 @@ def encode_from_string(content, chunk_size=1000, chunk_overlap=200):
             chunk.metadata['relevance_score'] = 1.0
 
         # Generate embeddings and create the vector store using local embeddings
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         vectorstore = FAISS.from_documents(chunks, embeddings)
 
     except Exception as e:
@@ -353,11 +353,7 @@ def get_langchain_embedding_provider(provider: EmbeddingProvider, model_id: str 
     Raises:
         ValueError: If the specified provider is not supported.
     """
-    if provider == EmbeddingProvider.HUGGINGFACE:
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-        model_name = model_id if model_id else "sentence-transformers/all-MiniLM-L6-v2"
-        return HuggingFaceEmbeddings(model_name=model_name)
-    elif provider == EmbeddingProvider.GOOGLE:
+    if provider == EmbeddingProvider.HUGGINGFACE or provider == EmbeddingProvider.GOOGLE:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
         model_name = model_id if model_id else "models/embedding-001"
         return GoogleGenerativeAIEmbeddings(model=model_name)
@@ -374,53 +370,62 @@ def get_langchain_embedding_provider(provider: EmbeddingProvider, model_id: str 
         raise ValueError(f"Unsupported embedding provider: {provider}")
 
 
-def encode_document(file_path, chunk_size=1000, chunk_overlap=200):
+
+def encode_document(file_paths, chunk_size=1000, chunk_overlap=200):
     """
-    Encodes various document types into a vectorstore using embeddings.
+    Encodes one or more document files into a single vectorstore using embeddings.
     Supports: PDF, TXT, CSV, JSON, DOCX, XLSX
-    
     Args:
-        file_path: The path to the document file.
+        file_paths: A list of document file paths (or a single path as string).
         chunk_size: The desired size of each text chunk.
         chunk_overlap: The amount of overlap between consecutive chunks.
-    
     Returns:
-        A FAISS vector store containing the encoded document content.
+        A FAISS vector store containing the encoded content from all documents.
     """
-    file_extension = os.path.splitext(file_path)[1].lower()
-    
-    # Choose appropriate loader based on file type
-    if file_extension == '.pdf':
-        loader = PyPDFLoader(file_path)
-    elif file_extension == '.txt':
-        loader = TextLoader(file_path, encoding='utf-8')
-    elif file_extension == '.csv':
-        loader = CSVLoader(file_path)
-    elif file_extension == '.json':
-        loader = JSONLoader(file_path, jq_schema='.', text_content=False)
-    elif file_extension in ['.docx', '.doc']:
-        loader = UnstructuredWordDocumentLoader(file_path)
-    elif file_extension in ['.xlsx', '.xls']:
-        loader = UnstructuredExcelLoader(file_path)
-    else:
-        raise ValueError(f"Unsupported file type: {file_extension}. Supported formats: PDF, TXT, CSV, JSON, DOCX, XLSX")
-    
-    print(f"Loading {file_extension.upper()} file: {file_path}")
-    
-    # Load documents
-    documents = loader.load()
-    
-    # Split documents into chunks
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap, length_function=len
-    )
-    texts = text_splitter.split_documents(documents)
-    cleaned_texts = replace_t_with_space(texts)
-    
-    # Create embeddings and vector store using local embeddings
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore = FAISS.from_documents(cleaned_texts, embeddings)
-    
-    print(f"Successfully processed {len(cleaned_texts)} chunks from {file_extension.upper()} file")
-    
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+    all_cleaned_texts = []
+    for file_path in file_paths:
+        file_extension = os.path.splitext(file_path)[1].lower()
+        # Choose appropriate loader based on file type
+        if file_extension == '.pdf':
+            loader = PyPDFLoader(file_path)
+        elif file_extension == '.txt':
+            loader = TextLoader(file_path, encoding='utf-8')
+        elif file_extension == '.csv':
+            loader = CSVLoader(file_path)
+        elif file_extension == '.json':
+            loader = JSONLoader(file_path, jq_schema='.', text_content=False)
+        elif file_extension in ['.docx', '.doc']:
+            loader = UnstructuredWordDocumentLoader(file_path)
+        elif file_extension in ['.xlsx', '.xls']:
+            loader = UnstructuredExcelLoader(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {file_extension}. Supported formats: PDF, TXT, CSV, JSON, DOCX, XLSX")
+        print(f"Loading {file_extension.upper()} file: {file_path}")
+        # Load documents
+        documents = loader.load()
+        # Split documents into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap, length_function=len
+        )
+        texts = text_splitter.split_documents(documents)
+        cleaned_texts = replace_t_with_space(texts)
+        # Add metadata: source (filename), page (if available), paragraph (chunk index)
+        for i, doc in enumerate(cleaned_texts):
+            doc.metadata['source'] = file_path
+            if file_extension == '.pdf':
+                page = doc.metadata.get('page', None)
+                if page is not None and page != 0:
+                    doc.metadata['page'] = page
+                else:
+                    doc.metadata['page'] = i + 1
+            else:
+                doc.metadata['page'] = None
+            doc.metadata['paragraph'] = i + 1
+        all_cleaned_texts.extend(cleaned_texts)
+    # Create embeddings and vector store using all chunks from all docs
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    vectorstore = FAISS.from_documents(all_cleaned_texts, embeddings)
+    print(f"Successfully processed {len(all_cleaned_texts)} chunks from {len(file_paths)} file(s)")
     return vectorstore

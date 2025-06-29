@@ -357,7 +357,7 @@ def save_uploaded_file(uploaded_file):
         st.error(f"Error saving file: {str(e)}")
         return None
 
-def load_rag_system(technique: str, document_paths: List[str] = None):
+def load_rag_system(technique: str, document_paths: List[str] = None, crag_web_search_enabled: bool = None):
     """Load the specified RAG system with error handling"""
     try:
         with st.spinner(f"Loading {technique}..."):
@@ -369,19 +369,12 @@ def load_rag_system(technique: str, document_paths: List[str] = None):
             
             elif technique == "CRAG":
                 if document_paths and len(document_paths) > 0:
-                    # CRAG works with single file, but we can use the climate change document
-                    climate_doc = None
-                    for doc_path in document_paths:
-                        if "climate" in doc_path.lower() or "Understanding_Climate_Change" in doc_path:
-                            climate_doc = doc_path
-                            break
-                    # If no climate doc found, use first document
-                    selected_doc = climate_doc if climate_doc else document_paths[0]
-                    return CRAG(selected_doc)
+                    # Pass ALL uploaded document paths to CRAG for true multi-document retrieval
+                    return CRAG(document_paths, web_search_enabled=crag_web_search_enabled)
                 else:
                     sample_file = "data/Understanding_Climate_Change (1).pdf"
                     if os.path.exists(sample_file):
-                        return CRAG(sample_file)
+                        return CRAG([sample_file], web_search_enabled=crag_web_search_enabled)
                     else:
                         st.error("CRAG requires a document. Please upload a file first.")
                         return None
@@ -922,7 +915,16 @@ def main():
             rag_techniques,
             help="Select the RAG technique to use for answering questions"
         )
-          # RAG Technique descriptions
+        # Show CRAG web search toggle only if CRAG is selected
+        if selected_technique == "CRAG":
+            crag_web_search_enabled = st.checkbox(
+                "Enable web search fallback (CRAG)",
+                value=True,
+                help="If enabled, CRAG will use web search when your document is insufficient. Disable to use only your uploaded document."
+            )
+        else:
+            crag_web_search_enabled = None
+                # RAG Technique descriptions
         technique_descriptions = {
             "Adaptive RAG": "Dynamically adapts retrieval strategy based on query type (Factual, Analytical, Opinion, Contextual)",
             "CRAG": "Corrective RAG that evaluates retrieved documents and falls back to web search if needed",
@@ -1052,7 +1054,7 @@ def main():
                     st.info("📄 Documents changed - reloading all RAG systems...")
                 
                 with st.spinner(f"Loading {selected_technique}..."):
-                    rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents)
+                    rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents, crag_web_search_enabled)
                     if rag_system:
                         st.session_state.rag_systems[selected_technique] = rag_system
                     else:

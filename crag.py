@@ -107,36 +107,41 @@ class SimpleResponse:
         self.content = content
 
 
-class CRAG:
+class   CRAG:
     """
     A class to handle the CRAG process for document retrieval, evaluation, and knowledge refinement.
     """
 
     def __init__(self, file_path, model="gemini-1.5-flash", max_tokens=1000, temperature=0, lower_threshold=0.3,
-                 upper_threshold=0.7):
+                 upper_threshold=0.7, web_search_enabled=None):
         """
         Initializes the CRAG Retriever by encoding the document and creating the necessary models and search tools.
 
         Args:
-            file_path (str): Path to the document file to encode (PDF, TXT, CSV, JSON, DOCX, XLSX).
+            file_path (str or list): Path(s) to the document file(s) to encode (PDF, TXT, CSV, JSON, DOCX, XLSX).
             model (str): The language model to use for the CRAG process.
             max_tokens (int): Maximum tokens to use in LLM responses (default: 1000).
             temperature (float): The temperature to use for LLM responses (default: 0).
             lower_threshold (float): Lower threshold for document evaluation scores (default: 0.3).
             upper_threshold (float): Upper threshold for document evaluation scores (default: 0.7).
+            web_search_enabled (bool or None): If True, enable web search; if False, disable; if None, use env var.
         """
         print("\n--- Initializing CRAG Process ---")
         self.lower_threshold = lower_threshold
         self.upper_threshold = upper_threshold
-        
-        # Load configuration from environment variables
-        self.web_search_enabled = os.getenv('CRAG_WEB_SEARCH', 'true').lower() == 'true'
+
+        # Allow explicit override, else fallback to environment variable
+        if web_search_enabled is not None:
+            self.web_search_enabled = bool(web_search_enabled)
+        else:
+            self.web_search_enabled = os.getenv('CRAG_WEB_SEARCH', 'true').lower() == 'true'
+
         self.fallback_mode = os.getenv('CRAG_FALLBACK_MODE', 'true').lower() == 'true'
-        
+
         print(f"Web search enabled: {self.web_search_enabled}")
         print(f"Fallback mode enabled: {self.fallback_mode}")
-        
-        # Encode the document into a vector store
+
+        # Encode all uploaded documents into a single vector store
         self.vectorstore = encode_document(file_path)
 
         # Initialize Gemini language model
@@ -150,9 +155,29 @@ class CRAG:
             print("Web search disabled via configuration")
 
     @staticmethod
-    def retrieve_documents(query, faiss_index, k=3):
+    def retrieve_documents(query, faiss_index, k=8):
+        # Increase k for more robust retrieval (option 1)
         docs = faiss_index.similarity_search(query, k=k)
-        return [doc.page_content for doc in docs]
+        return [(doc.page_content, doc.metadata) for doc in docs]
+
+    @staticmethod
+    def retrieve_documents_per_document(query, faiss_index, k=3):
+        # Option 4: Per-document retrieval (retrieve top k from each document, then combine)
+        # Assumes that faiss_index has a method to get all unique sources (documents)
+        # and can filter by source. If not, we simulate by grouping after retrieval.
+        # Retrieve a large pool, then group by source.
+        docs = faiss_index.similarity_search(query, k=30)  # Large pool
+        # Group by source
+        from collections import defaultdict
+        source_to_docs = defaultdict(list)
+        for doc in docs:
+            source = doc.metadata.get('source', 'Unknown document')
+            source_to_docs[source].append(doc)
+        # For each document, take top k
+        selected = []
+        for doclist in source_to_docs.values():
+            selected.extend(doclist[:k])
+        return [(doc.page_content, doc.metadata) for doc in selected]
 
     def evaluate_documents(self, query, documents):
         return [self.retrieval_evaluator(query, doc) for doc in documents]
@@ -221,50 +246,53 @@ Rewritten query:"""
             return []
 
     def perform_web_search(self, query):
-        """Improved web search with proper error handling and fallback"""
+        """Improved web search with robust debug logging and user-facing error handling"""
         # Check if web search is disabled
         if not self.web_search_enabled:
             print("Web search disabled via configuration")
             return ["Web search disabled"], [("Configuration", "")]
-        
         try:
             # Try improved web search first
             web_results = self.safe_web_search(query)
-            
+            print("\n[CRAG DEBUG] Raw web search results:", web_results)
             if web_results:
                 # Process successful results
                 web_knowledge = []
                 sources = []
-                
                 for result in web_results:
                     if isinstance(result, dict):
                         title = result.get('title', 'Untitled')
                         content = result.get('snippet', result.get('content', ''))
                         link = result.get('link', result.get('url', ''))
-                        
                         if content:
                             web_knowledge.append(content)
-                            sources.append((title, link))
-                
+                            # Always label as web search
+                            sources.append((f"Web search: {title}", link))
                 if web_knowledge:
+                    print(f"[CRAG DEBUG] Parsed web knowledge: {web_knowledge}")
+                    print(f"[CRAG DEBUG] Web sources: {sources}")
                     return web_knowledge, sources
-            
+                else:
+                    print("[CRAG DEBUG] No usable content in web results.")
             # Fallback to original method if improved search fails
             if self.search:  # Only if search tool is available
                 print("Falling back to original web search...")
                 rewritten_query = self.rewrite_query(query)
                 web_results = self.search.run(rewritten_query)
+                print(f"[CRAG DEBUG] Fallback web search raw results: {web_results}")
                 web_knowledge = self.knowledge_refinement(web_results)
-                sources = self.parse_search_results(web_results)
+                sources = [(f"Web search: {title}", link) for title, link in self.parse_search_results(web_results)]
+                if not web_knowledge or all(not w.strip() for w in web_knowledge):
+                    print("[CRAG DEBUG] Fallback web search returned no usable knowledge.")
+                    return ["Web search failed to return any results relevant to your query."], [("Web Search Failure", "")]
                 return web_knowledge, sources
             else:
                 print("No search tool available")
                 return ["Web search unavailable"], [("No Search Tool", "")]
-            
         except Exception as e:
             print(f"Web search failed: {str(e)}")
             # Return empty results instead of crashing
-            return ["Web search unavailable at this time."], [("Web Search Error", "")]
+            return [f"Web search unavailable at this time. Error: {str(e)}"], [("Web Search Error", "")]
     
     def safe_web_search(self, query, max_results=3):
         """Improved web search with proper error handling"""
@@ -384,18 +412,49 @@ Rewritten query:"""
     
     def generate_response(self, query, knowledge, sources):
         sources_text = "\n".join([f"- {title}: {link}" if link else f"- {title}" for title, link in sources])
-        
-        # Determine source type for clear attribution
-        source_info = ""
-        if any("Retrieved document" in s[0] for s in sources) and len(sources) == 1:
-            source_info = "Based on your uploaded document:"
-        elif any("Retrieved document" not in s[0] for s in sources):
-            source_info = "Based on web search results:"
+
+        # Improved source attribution logic
+        def is_doc_source(s):
+            # Accept any source that is not web search or error as document
+            return (
+                ("Retrieved document" in s[0]) or
+                ("(fallback" in s[0]) or
+                ("(web search failed" in s[0]) or
+                ("uploaded document" in s[0]) or
+                ("Unknown document" in s[0])
+            )
+        def is_web_source(s):
+            return ("Web search" in s[0])
+        def is_error_source(s):
+            return any(err in s[0] for err in ["No sources available", "Error", "Web search unavailable", "Configuration"])
+
+        doc_sources = [s for s in sources if is_doc_source(s)]
+        web_sources = [s for s in sources if is_web_source(s)]
+        only_error_sources = all(is_error_source(s) for s in sources)
+
+        if not self.web_search_enabled:
+            if doc_sources:
+                source_info = "Based on your uploaded document:"
+            elif only_error_sources:
+                source_info = "No relevant information found in your uploaded document."
+            else:
+                source_info = "Based on your uploaded document:"
         else:
-            source_info = "Based on your uploaded document and web search results:"
-        
+            if doc_sources and web_sources:
+                source_info = "Based on your uploaded document and web search results:"
+            elif doc_sources:
+                source_info = "Based on your uploaded document:"
+            elif web_sources:
+                source_info = "Based on web search results:"
+            elif only_error_sources:
+                source_info = "No relevant information found in your uploaded document or web search."
+            else:
+                source_info = "Based on your uploaded document:"
+
         prompt_text = f"""Answer the following query using the provided knowledge. 
-Be clear about your sources and use the exact source attribution provided.
+Be clear about your sources and use the exact source attribution provided. Do not mention web search unless the source attribution below says so.
+
+For any part of the answer that comes directly from the uploaded document, enclose the exact span (sentence, phrase, or paragraph) in double quotation marks (""). If you paraphrase, also quote the original span you used. If the answer is synthesized from multiple parts, quote each relevant span. If the answer is from web search, do not quote anything from the document.
 
 Query: {query}
 
@@ -408,96 +467,127 @@ Sources:
 Provide a clear, accurate answer and mention the sources appropriately. If the information comes from web search, explicitly state that. If from uploaded documents, state that clearly.
 
 Answer:"""
-        
+
         result = self._call_llm_with_retry(prompt_text)
         return result.content
 
     def run(self, query):
-        """CRAG with graceful web search fallback"""
+        """CRAG with robust multi-document retrieval and fallback"""
         print(f"\nProcessing query: {query}")
 
         try:
-            # Step 1: Retrieve and evaluate documents
-            retrieved_docs = self.retrieve_documents(query, self.vectorstore)
-            eval_scores = self.evaluate_documents(query, retrieved_docs)
+            # Option 4: Per-document retrieval (retrieve top k from each document, then evaluate all together)
+            per_doc_k = 3
+            retrieved_docs = self.retrieve_documents_per_document(query, self.vectorstore, k=per_doc_k)
+            # Option 1: Increase k for global retrieval as well (for fallback)
+            global_k = 8
+            global_retrieved_docs = self.retrieve_documents(query, self.vectorstore, k=global_k)
 
-            print(f"\nRetrieved {len(retrieved_docs)} documents")
+            # Combine and deduplicate (by content+source)
+            seen = set()
+            all_docs = []
+            for doc, meta in retrieved_docs + global_retrieved_docs:
+                key = (doc, meta.get('source', ''))
+                if key not in seen:
+                    all_docs.append((doc, meta))
+                    seen.add(key)
+
+            eval_scores = self.evaluate_documents(query, [doc[0] for doc in all_docs])
+
+            print(f"\nRetrieved {len(all_docs)} unique document chunks")
             print(f"Evaluation scores: {eval_scores}")
 
-            # Determine action based on evaluation scores
-            max_score = max(eval_scores) if eval_scores else 0.0
             sources = []
+            # Find all chunks above upper threshold
+            relevant_chunks = [(doc, meta, score) for (doc, meta), score in zip(all_docs, eval_scores) if score > self.upper_threshold]
+            max_score = max(eval_scores) if eval_scores else 0.0
+            max_idx = eval_scores.index(max_score) if eval_scores else -1
 
-            if max_score > self.upper_threshold:
-                print("\nAction: Correct - Using retrieved document")
-                best_doc = retrieved_docs[eval_scores.index(max_score)]
-                final_knowledge = best_doc
-                sources.append(("Retrieved document", ""))
-                
+            if relevant_chunks:
+                print("\nAction: Correct - Using all relevant document chunks above threshold")
+                final_knowledge = "\n".join([doc for doc, meta, score in relevant_chunks])
+                for doc, metadata, score in relevant_chunks:
+                    doc_name = metadata.get('source', 'Unknown document')
+                    if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
+                        doc_name += f", page {metadata['page']}"
+                    if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
+                        doc_name += f", paragraph {metadata['paragraph']}"
+                    sources.append((doc_name, ""))
             elif max_score < self.lower_threshold:
                 print("\nAction: Incorrect - Performing web search")
                 try:
                     final_knowledge, sources = self.perform_web_search(query)
-                    
-                    # Check if web search actually returned useful results
-                    if not final_knowledge or final_knowledge == ["Web search unavailable at this time."]:
-                        print("\nWeb search failed, falling back to best local document")
-                        if retrieved_docs:
-                            best_doc = retrieved_docs[0]  # Use first document as fallback
-                            final_knowledge = best_doc
-                            sources = [("Retrieved document (fallback)", "")]
-                            try:
-                                st.warning("🌐 Web search failed, using local documents instead")
-                            except:
-                                print("Warning: Web search failed, using local documents instead")
+                    if not final_knowledge or all(
+                        (not k or 'web search' in k.lower() or 'unavailable' in k.lower() or 'error' in k.lower())
+                        for k in final_knowledge):
+                        print("\nWeb search failed or returned no relevant results.")
+                        # --- FIX: Instead of giving up, always use the best available chunk from uploaded docs, even if below threshold ---
+                        if all_docs and len(all_docs) > 0:
+                            # Find the best available chunk (even if low score)
+                            max_idx = eval_scores.index(max_score) if eval_scores else -1
+                            if max_idx != -1:
+                                best_doc, metadata = all_docs[max_idx]
+                                retrieved_knowledge = self.knowledge_refinement(best_doc)
+                                doc_name = metadata.get('source', 'Unknown document')
+                                if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
+                                    doc_name += f", page {metadata['page']}"
+                                if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
+                                    doc_name += f", paragraph {metadata['paragraph']}"
+                                final_knowledge = "[No relevant chunk found above threshold or from web search. Using best available chunk from your uploaded documents (low confidence):]\n"
+                                if isinstance(retrieved_knowledge, list):
+                                    final_knowledge += "\n".join(retrieved_knowledge)
+                                else:
+                                    final_knowledge += str(retrieved_knowledge)
+                                sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+                            else:
+                                final_knowledge = "I cannot answer your question. The provided sources indicate that a web search did not return any relevant results, and no relevant information was found in your uploaded documents."
+                                sources = [("Web search failure", "")]
                         else:
-                            final_knowledge = "No relevant information found in documents or web search."
-                            sources = [("No sources available", "")]
-                            
+                            final_knowledge = "I cannot answer your question. The provided sources indicate that a web search did not return any relevant results, and no documents were uploaded."
+                            sources = [("Web search failure", "")]
+                    if isinstance(final_knowledge, list):
+                        final_knowledge = "\n".join(final_knowledge)
                 except Exception as web_error:
                     print(f"\nWeb search error: {str(web_error)}")
-                    # Fallback to local documents
-                    if retrieved_docs:
-                        best_doc = retrieved_docs[0]
-                        final_knowledge = best_doc
-                        sources = [("Retrieved document (web search failed)", "")]
-                        try:
-                            st.warning(f"🌐 Web search failed: {str(web_error)[:50]}... Using local documents.")
-                        except:
-                            print(f"Warning: Web search failed: {str(web_error)[:50]}... Using local documents.")
+                    if all_docs and len(all_docs) > 0:
+                        # Same fix as above for error case
+                        max_idx = eval_scores.index(max_score) if eval_scores else -1
+                        if max_idx != -1:
+                            best_doc, metadata = all_docs[max_idx]
+                            retrieved_knowledge = self.knowledge_refinement(best_doc)
+                            doc_name = metadata.get('source', 'Unknown document')
+                            if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
+                                doc_name += f", page {metadata['page']}"
+                            if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
+                                doc_name += f", paragraph {metadata['paragraph']}"
+                            final_knowledge = "[No relevant chunk found above threshold or from web search. Using best available chunk from your uploaded documents (low confidence):]\n"
+                            if isinstance(retrieved_knowledge, list):
+                                final_knowledge += "\n".join(retrieved_knowledge)
+                            else:
+                                final_knowledge += str(retrieved_knowledge)
+                            sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+                        else:
+                            final_knowledge = f"Web search failed and no relevant information was found in your uploaded documents. Error: {str(web_error)}"
+                            sources = [("Error", "")]
                     else:
-                        final_knowledge = f"Web search failed and no local documents available. Error: {str(web_error)}"
+                        final_knowledge = f"Web search failed and no documents were uploaded. Error: {str(web_error)}"
                         sources = [("Error", "")]
-                        
             else:
-                print("\nAction: Ambiguous - Combining retrieved document and web search")
-                best_doc = retrieved_docs[eval_scores.index(max_score)]
-                retrieved_knowledge = self.knowledge_refinement(best_doc)
-                
-                try:
-                    web_knowledge, web_sources = self.perform_web_search(query)
-                    
-                    # Check if web search was successful
-                    if web_knowledge and web_knowledge != ["Web search unavailable at this time."]:
-                        final_knowledge = "\n".join(retrieved_knowledge + web_knowledge)
-                        sources = [("Retrieved document", "")] + web_sources
-                    else:
-                        print("\nWeb search failed in ambiguous case, using only retrieved document")
-                        final_knowledge = "\n".join(retrieved_knowledge)
-                        sources = [("Retrieved document", "")]
-                        try:
-                            st.info("ℹ️ Web search unavailable, using only local documents")
-                        except:
-                            print("Info: Web search unavailable, using only local documents")
-                            
-                except Exception as web_error:
-                    print(f"\nWeb search error in ambiguous case: {str(web_error)}")
-                    final_knowledge = "\n".join(retrieved_knowledge)
-                    sources = [("Retrieved document", "")]
-                    try:
-                        st.info(f"ℹ️ Web search failed: {str(web_error)[:50]}... Using only local documents.")
-                    except:
-                        print(f"Info: Web search failed: {str(web_error)[:50]}... Using only local documents.")
+                # Option 2: Always use the best available chunk if none are above threshold (with warning)
+                print("\nAction: No chunk above upper threshold, using best available chunk with low-confidence warning")
+                if max_idx == -1:
+                    final_knowledge = "No relevant information found."
+                    sources = [("No sources available", "")]
+                else:
+                    best_doc, metadata = all_docs[max_idx]
+                    retrieved_knowledge = self.knowledge_refinement(best_doc)
+                    doc_name = metadata.get('source', 'Unknown document')
+                    if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
+                        doc_name += f", page {metadata['page']}"
+                    if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
+                        doc_name += f", paragraph {metadata['paragraph']}"
+                    final_knowledge = "[Low confidence: No chunk was highly relevant, but this is the best available information:]\n" + ("\n".join(retrieved_knowledge) if isinstance(retrieved_knowledge, list) else str(retrieved_knowledge))
+                    sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
 
             print("\nFinal knowledge:")
             print(final_knowledge[:500] + "..." if len(str(final_knowledge)) > 500 else str(final_knowledge))
@@ -513,23 +603,13 @@ Answer:"""
             except Exception as response_error:
                 print(f"\nError generating response: {str(response_error)}")
                 response = f"Error generating response: {str(response_error)}"
-            
-            # Small delay to be respectful to the API
+
             time.sleep(0.5)
-            
             return response
-            
+
         except Exception as e:
             print(f"\nCRAG process failed: {str(e)}")
-            # Final fallback
-            try:
-                if hasattr(self, 'vectorstore'):
-                    docs = self.vectorstore.similarity_search(query, k=1)
-                    if docs:
-                        return f"CRAG failed, but found this relevant information: {docs[0].page_content[:500]}..."
-                return f"CRAG process failed: {str(e)}"
-            except:
-                return f"CRAG process failed: {str(e)}"
+            return f"CRAG process failed: {str(e)}"
 
     def _call_llm_with_retry(self, prompt_text, max_retries=3):
         """
@@ -585,8 +665,20 @@ def parse_args():
                         help="Lower threshold for score evaluation (default: 0.3).")
     parser.add_argument("--upper_threshold", type=float, default=0.7,
                         help="Upper threshold for score evaluation (default: 0.7).")
+    parser.add_argument("--web_search_enabled", type=str, default=None,
+                        help="Set to 'true' to enable web search, 'false' to disable, or leave unset to use env var.")
 
-    return validate_args(parser.parse_args())
+    args = parser.parse_args()
+    # Convert web_search_enabled to bool or None
+    if args.web_search_enabled is not None:
+        val = args.web_search_enabled.strip().lower()
+        if val == 'true':
+            args.web_search_enabled = True
+        elif val == 'false':
+            args.web_search_enabled = False
+        else:
+            args.web_search_enabled = None
+    return validate_args(args)
 
 
 # Main function to handle argument parsing and call the CRAG class
@@ -598,7 +690,8 @@ def main(args):
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         lower_threshold=args.lower_threshold,
-        upper_threshold=args.upper_threshold
+        upper_threshold=args.upper_threshold,
+        web_search_enabled=args.web_search_enabled
     )
 
     # Process the query
@@ -607,5 +700,55 @@ def main(args):
     print(f"Answer: {response}")
 
 
+
+# --- Streamlit UI for CRAG Web Search Toggle ---
+
+def streamlit_crag_app():
+    import tempfile
+    import os
+    st.title("CRAG Chatbot Demo")
+    st.write("Upload one or more documents and ask questions. Optionally enable/disable web search.")
+
+    # Allow multiple file uploads
+    uploaded_files = st.file_uploader(
+        "Upload documents (PDF, TXT, CSV, DOCX, XLSX, JSON)", 
+        accept_multiple_files=True
+    )
+    web_search_enabled = st.checkbox("Enable Web Search", value=True)
+    query = st.text_input("Enter your question:")
+
+    model = st.selectbox("Model", ["gemini-1.5-flash"], index=0)
+    max_tokens = st.number_input("Max tokens", min_value=100, max_value=4096, value=1000)
+    temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.0)
+
+    if uploaded_files and query:
+        # Save all uploaded files to temp and collect their paths
+        tmp_paths = []
+        for uploaded_file in uploaded_files:
+            suffix = os.path.splitext(uploaded_file.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+                tmp_file.write(uploaded_file.read())
+                tmp_paths.append(tmp_file.name)
+
+        st.info(f"Processing {len(tmp_paths)} document(s): " + ", ".join([os.path.basename(p) for p in tmp_paths]))
+        # Pass the list of file paths to CRAG
+        crag = CRAG(
+            file_path=tmp_paths,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            web_search_enabled=web_search_enabled
+        )
+        with st.spinner("Generating answer..."):
+            answer = crag.run(query)
+        st.success("Answer:")
+        st.write(answer)
+
+
+# If running as a script, launch Streamlit UI if desired
 if __name__ == '__main__':
-    main(parse_args())
+    import sys
+    if any(arg in sys.argv for arg in ['--ui', '--streamlit']):
+        streamlit_crag_app()
+    else:
+        main(parse_args())
