@@ -143,6 +143,9 @@ class   CRAG:
 
         # Encode all uploaded documents into a single vector store
         self.vectorstore = encode_document(file_path)
+        
+        # Store file path for document viewing
+        self.file_path = file_path if isinstance(file_path, list) else [file_path]
 
         # Initialize Gemini language model
         self.llm = SimpleGeminiLLM(model=model, max_tokens=max_tokens, temperature=temperature)
@@ -153,6 +156,10 @@ class   CRAG:
         else:
             self.search = None
             print("Web search disabled via configuration")
+        
+        # Initialize source tracking
+        self._last_source_chunks = []
+        self._last_sources = []
 
     @staticmethod
     def retrieve_documents(query, faiss_index, k=8):
@@ -183,11 +190,29 @@ class   CRAG:
         return [self.retrieval_evaluator(query, doc) for doc in documents]
 
     def retrieval_evaluator(self, query, document):
-        prompt_text = f"""On a scale from 0 to 1, how relevant is the following document to the query? 
-Please respond with ONLY a number between 0 and 1, no other text.
+        prompt_text = f"""You are a strict relevance evaluator. Rate how relevant this document is to the query on a scale from 0 to 1.
+
+IMPORTANT SCORING CRITERIA:
+- Score 0.8-1.0: Document DIRECTLY answers the specific question with concrete information
+- Score 0.5-0.7: Document contains some relevant information but may be too general
+- Score 0.2-0.4: Document mentions the topic but doesn't directly address the query
+- Score 0.0-0.1: Document is off-topic or only provides general context
+
+BE EXTRA STRICT WITH:
+- Generic introductions, definitions, or background information that don't answer the question
+- Content that mentions the topic but doesn't answer the specific question
+- Off-topic sections when specific information is requested
+
+SPECIAL CONSIDERATIONS:
+- Mental health includes cognitive functions, emotional regulation, mood, anxiety, depression, psychological well-being
+- Emotional health relates to mood swings, anxiety, depression, emotional regulation, psychological state
+- Physical health relates to immune system, heart health, metabolism, body systems (unless asking about brain/nervous system)
+- If asking about mental/emotional health, prioritize content about cognition, emotions, mood, psychology over purely physical health
 
 Query: {query}
 Document: {document}
+
+Provide ONLY a number between 0 and 1. Consider: Does this document directly and specifically answer the query?
 Relevance score:"""
         
         result = self._call_llm_with_retry(prompt_text)
@@ -199,11 +224,29 @@ Relevance score:"""
             numbers = re.findall(r'0\.\d+|1\.0|1|0', score_text)
             if numbers:
                 score = float(numbers[0])
-                return min(max(score, 0.0), 1.0)  # Ensure it's between 0 and 1
+                score = min(max(score, 0.0), 1.0)  # Ensure it's between 0 and 1
+                
+                # Additional filtering based on content analysis
+                doc_lower = document.lower()
+                query_lower = query.lower()
+                
+                # More precise penalization - only penalize physical health when specifically asking about mental/cognitive
+                if ("cognitive" in query_lower or "mental" in query_lower or "emotional" in query_lower or "psychological" in query_lower):
+                    # Only penalize if it's clearly about physical health benefits and NOT about mental/cognitive
+                    if ("physical health" in doc_lower or "immune system" in doc_lower or "heart health" in doc_lower or "metabolism" in doc_lower) and not any(term in doc_lower for term in ["cognitive", "mental", "emotional", "psychological", "brain", "memory", "attention", "mood"]):
+                        score = score * 0.4  # Moderate penalty for purely physical health content
+                        print(f"🔍 CRAG: Penalized physical health chunk when asking about mental/cognitive - reduced score to {score:.2f}")
+                
+                # Penalize very short generic introductions
+                if len(document) < 100 and any(phrase in doc_lower for phrase in ["this document", "we will", "introduction", "overview"]):
+                    score = score * 0.4
+                    print(f"🔍 CRAG: Penalized short generic intro - reduced score to {score:.2f}")
+                
+                return score
             else:
-                return 0.5  # Default score if no number found
+                return 0.3  # Lower default score for unparseable responses
         except (ValueError, AttributeError):
-            return 0.5  # Default score if parsing fails
+            return 0.3  # Lower default score if parsing fails
     
     def knowledge_refinement(self, document):
         prompt_text = f"""Extract the key information from the following document in bullet points:
@@ -513,6 +556,21 @@ Answer:"""
                     if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
                         doc_name += f", paragraph {metadata['paragraph']}"
                     sources.append((doc_name, ""))
+                    
+                    # Store source chunks for document viewing - use more inclusive threshold for highlighting
+                    if score >= 0.5:  # More inclusive threshold to capture relevant mental/emotional health content
+                        print(f"📌 CRAG: Storing chunk for highlighting (score: {score:.2f})")
+                        print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")
+                        self._last_source_chunks.append({
+                            'text': doc,
+                            'source': metadata.get('source', 'Unknown'),
+                            'page': metadata.get('page'),
+                            'paragraph': metadata.get('paragraph'),
+                            'score': score
+                        })
+                    else:
+                        print(f"🚫 CRAG: Skipping chunk for highlighting (score: {score:.2f} < 0.5)")
+                        print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")  
             elif max_score < self.lower_threshold:
                 print("\nAction: Incorrect - Performing web search")
                 try:
@@ -539,6 +597,21 @@ Answer:"""
                                 else:
                                     final_knowledge += str(retrieved_knowledge)
                                 sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+                                
+                                # Store fallback source chunk for document viewing - only if reasonably relevant
+                                if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
+                                    print(f"📌 CRAG FALLBACK: Storing chunk for highlighting (score: {max_score:.2f})")
+                                    print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
+                                    self._last_source_chunks.append({
+                                        'text': best_doc,
+                                        'source': metadata.get('source', 'Unknown'),
+                                        'page': metadata.get('page'),
+                                        'paragraph': metadata.get('paragraph'),
+                                        'score': max_score
+                                    })
+                                else:
+                                    print(f"🚫 CRAG FALLBACK: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
+                                    print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
                             else:
                                 final_knowledge = "I cannot answer your question. The provided sources indicate that a web search did not return any relevant results, and no relevant information was found in your uploaded documents."
                                 sources = [("Web search failure", "")]
@@ -566,6 +639,21 @@ Answer:"""
                             else:
                                 final_knowledge += str(retrieved_knowledge)
                             sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+                            
+                            # Store fallback source chunk for document viewing - only if reasonably relevant
+                            if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
+                                print(f"📌 CRAG FALLBACK 2: Storing chunk for highlighting (score: {max_score:.2f})")
+                                print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
+                                self._last_source_chunks.append({
+                                    'text': best_doc,
+                                    'source': metadata.get('source', 'Unknown'),
+                                    'page': metadata.get('page'),
+                                    'paragraph': metadata.get('paragraph'),
+                                    'score': max_score
+                                })
+                            else:
+                                print(f"🚫 CRAG FALLBACK 2: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
+                                print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
                         else:
                             final_knowledge = f"Web search failed and no relevant information was found in your uploaded documents. Error: {str(web_error)}"
                             sources = [("Error", "")]
@@ -588,6 +676,21 @@ Answer:"""
                         doc_name += f", paragraph {metadata['paragraph']}"
                     final_knowledge = "[Low confidence: No chunk was highly relevant, but this is the best available information:]\n" + ("\n".join(retrieved_knowledge) if isinstance(retrieved_knowledge, list) else str(retrieved_knowledge))
                     sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+                    
+                    # Store fallback source chunk for document viewing - only if reasonably relevant
+                    if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
+                        print(f"📌 CRAG FALLBACK 3: Storing chunk for highlighting (score: {max_score:.2f})")
+                        print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
+                        self._last_source_chunks.append({
+                            'text': best_doc,
+                            'source': metadata.get('source', 'Unknown'),
+                            'page': metadata.get('page'),
+                            'paragraph': metadata.get('paragraph'),
+                            'score': max_score
+                        })
+                    else:
+                        print(f"🚫 CRAG FALLBACK 3: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
+                        print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
 
             print("\nFinal knowledge:")
             print(final_knowledge[:500] + "..." if len(str(final_knowledge)) > 500 else str(final_knowledge))
@@ -595,6 +698,9 @@ Answer:"""
             print("\nSources:")
             for title, link in sources:
                 print(f"{title}: {link}" if link else title)
+
+            # Store sources for document viewing
+            self._last_sources = sources
 
             print("\nGenerating response...")
             try:
@@ -610,6 +716,50 @@ Answer:"""
         except Exception as e:
             print(f"\nCRAG process failed: {str(e)}")
             return f"CRAG process failed: {str(e)}"
+
+    def run_with_sources(self, query):
+        """
+        Enhanced CRAG that returns answer with detailed source chunks for document viewing
+        
+        Args:
+            query: The user's question
+            
+        Returns:
+            Dictionary containing:
+            - answer: The generated response
+            - source_chunks: List of source chunks with metadata
+            - sources: List of source information
+        """
+        print(f"\nProcessing query with source tracking: {query}")
+
+        try:
+            # Clear previous source tracking
+            self._last_source_chunks = []
+            self._last_sources = []
+            
+            # Run the main CRAG process
+            response = self.run(query)
+            
+            print(f"\n🎯 CRAG: Final source chunks to return for highlighting:")
+            print(f"   Total chunks: {len(self._last_source_chunks)}")
+            for i, chunk in enumerate(self._last_source_chunks):
+                score = chunk.get('score', 'N/A')
+                text = chunk.get('text', '')[:100] + '...' if len(chunk.get('text', '')) > 100 else chunk.get('text', '')
+                print(f"   {i+1}. Score: {score}, Text: '{text}'")
+            
+            return {
+                'answer': response,
+                'source_chunks': self._last_source_chunks,
+                'sources': self._last_sources
+            }
+            
+        except Exception as e:
+            print(f"\nCRAG process with sources failed: {str(e)}")
+            return {
+                'answer': f"CRAG process failed: {str(e)}",
+                'source_chunks': [],
+                'sources': []
+            }
 
     def _call_llm_with_retry(self, prompt_text, max_retries=3):
         """

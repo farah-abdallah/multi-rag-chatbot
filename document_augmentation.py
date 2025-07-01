@@ -310,6 +310,7 @@ def load_document_content(file_path: str) -> str:
     """
     Load content from various document formats and return as a single string.
     Supports: PDF, TXT, CSV, JSON, DOCX, XLSX
+    Enhanced with better encoding handling.
     """
     try:
         file_extension = os.path.splitext(file_path)[1].lower()
@@ -320,7 +321,39 @@ def load_document_content(file_path: str) -> str:
         if file_extension == '.pdf':
             loader = PyPDFLoader(file_path)
         elif file_extension in ['.txt', '.md']:
-            loader = TextLoader(file_path, encoding='utf-8')
+            # For text files, try direct reading first (more reliable for temp files)
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                print(f"✅ Used direct file reading for {os.path.basename(file_path)}")
+                print(f"✅ Successfully loaded text file: {os.path.basename(file_path)}")
+                print(f"📊 Total content length: {len(content):,} characters")
+                return content.strip()
+            except UnicodeDecodeError:
+                # Try multiple encodings for text files if UTF-8 fails
+                loader = None
+                for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                    try:
+                        loader = TextLoader(file_path, encoding=encoding)
+                        break
+                    except (UnicodeDecodeError, Exception):
+                        continue
+                
+                # If TextLoader failed, try direct file reading with different encodings
+                if loader is None:
+                    for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                        try:
+                            with open(file_path, 'r', encoding=encoding) as f:
+                                content = f.read()
+                            print(f"✅ Used direct file reading with {encoding} encoding for {os.path.basename(file_path)}")
+                            print(f"✅ Successfully loaded text file: {os.path.basename(file_path)}")
+                            print(f"📊 Total content length: {len(content):,} characters")
+                            return content.strip()
+                        except Exception:
+                            continue
+                    raise ValueError(f"Could not decode text file with any supported encoding")
+            except Exception as e:
+                raise ValueError(f"Could not read text file: {e}")
         elif file_extension == '.csv':
             loader = CSVLoader(file_path)
         elif file_extension == '.json':
@@ -332,8 +365,44 @@ def load_document_content(file_path: str) -> str:
         else:
             raise ValueError(f"Unsupported file type: {file_extension}")
         
-        # Load documents
-        documents = loader.load()
+        # Load documents with error handling
+        try:
+            documents = loader.load()
+        except UnicodeDecodeError as e:
+            print(f"⚠️ Unicode decode error: {e}")
+            # For PDF files, try a different approach
+            if file_extension == '.pdf':
+                try:
+                    import fitz  # PyMuPDF
+                    doc = fitz.open(file_path)
+                    text_content = ""
+                    for page in doc:
+                        text_content += page.get_text()
+                    doc.close()
+                    
+                    # Create a fake document object
+                    class SimpleDoc:
+                        def __init__(self, content):
+                            self.page_content = content
+                    
+                    documents = [SimpleDoc(text_content)]
+                    print("✅ Used PyMuPDF fallback for PDF loading")
+                    
+                except ImportError:
+                    print("⚠️ PyMuPDF not available, trying basic text extraction")
+                    # Last resort: try to read as binary and decode with errors='ignore'
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                    text_content = content.decode('utf-8', errors='ignore')
+                    
+                    class SimpleDoc:
+                        def __init__(self, content):
+                            self.page_content = content
+                    
+                    documents = [SimpleDoc(text_content)]
+                    print("✅ Used binary fallback for document loading")
+            else:
+                raise
         
         if not documents:
             raise ValueError(f"No content could be extracted from {file_path}")
@@ -341,8 +410,11 @@ def load_document_content(file_path: str) -> str:
         # Combine all document content into a single string
         content_parts = []
         for doc in documents:
-            if doc.page_content.strip():  # Only add non-empty content
-                content_parts.append(doc.page_content.strip())
+            content = getattr(doc, 'page_content', str(doc)).strip()
+            if content:  # Only add non-empty content
+                # Clean up any remaining encoding issues
+                content = content.encode('utf-8', errors='ignore').decode('utf-8')
+                content_parts.append(content)
         
         combined_content = "\n\n".join(content_parts)
         
@@ -354,16 +426,44 @@ def load_document_content(file_path: str) -> str:
     except Exception as e:
         print(f"❌ Error loading {file_path}: {str(e)}")
         
-        # Fallback to the original PDF-only method if it's a PDF
+        # Enhanced fallback methods
         if file_path.lower().endswith('.pdf'):
             try:
-                print("🔄 Falling back to original PDF loader...")
+                print("🔄 Falling back to helper_functions PDF reader...")
                 from helper_functions import read_pdf_to_string
-                return read_pdf_to_string(file_path)
+                content = read_pdf_to_string(file_path)
+                return content.encode('utf-8', errors='ignore').decode('utf-8')
             except Exception as fallback_error:
-                print(f"❌ Fallback also failed: {fallback_error}")
+                print(f"❌ Helper functions fallback failed: {fallback_error}")
         
-        raise Exception(f"Could not load document: {e}")
+        # Try direct file reading for any file type as final fallback
+        try:
+            print("🔄 Final fallback: direct file read with error handling...")
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            if len(content.strip()) > 10:  # Sanity check
+                print(f"✅ Successfully loaded with direct read fallback: {os.path.basename(file_path)}")
+                return content
+            else:
+                raise ValueError("Decoded content too short, likely corrupted")
+        except Exception as final_error:
+            print(f"❌ Direct read fallback failed: {final_error}")
+            
+            # Last resort: try binary read for any file
+            try:
+                print("🔄 Binary fallback: binary read with error handling...")
+                with open(file_path, 'rb') as f:
+                    content = f.read()
+                decoded_content = content.decode('utf-8', errors='ignore')
+                if len(decoded_content.strip()) > 10:  # Sanity check
+                    print(f"✅ Successfully loaded with binary fallback: {os.path.basename(file_path)}")
+                    return decoded_content
+                else:
+                    raise ValueError("Decoded content too short, likely corrupted")
+            except Exception as binary_error:
+                print(f"❌ Binary fallback failed: {binary_error}")
+        
+        raise Exception(f"Could not load document with any method: {e}")
 
 
 def detect_file_format_and_generate_questions(content: str, file_path: str, num_questions: int) -> List[str]:

@@ -12,3 +12,5 @@ scikit-learn
 google-generativeai
 langchain-huggingface
 langchain-text-splitters
+beautifulsoup4
+requests

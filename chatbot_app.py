@@ -39,6 +39,9 @@ from explainable_retrieval import ExplainableRAGMethod
 from evaluation_framework import EvaluationManager, UserFeedback
 from analytics_dashboard import display_analytics_dashboard
 
+# Import document viewer components
+from document_viewer import create_document_link, show_embedded_document_viewer, check_document_viewer_page
+
 # === PERSISTENT CHAT STORAGE ===
 def init_chat_database():
     """Initialize database for persistent chat storage"""
@@ -338,6 +341,8 @@ def initialize_session_state():
         st.session_state.pending_feedback = {}
     if 'current_page' not in st.session_state:
         st.session_state.current_page = "Chat"
+    if 'last_source_chunks' not in st.session_state:
+        st.session_state.last_source_chunks = {}  # Store source chunks by message ID
     
     # Update last activity timestamp
     st.session_state.last_activity = datetime.now()
@@ -467,9 +472,10 @@ def load_rag_system(technique: str, document_paths: List[str] = None, crag_web_s
         return None
 
 def get_rag_response(technique: str, query: str, rag_system):
-    """Get response from the specified RAG system and return both response and context"""
+    """Get response from the specified RAG system and return response, context, and optionally source_chunks"""
     try:
         context = ""  # Will store retrieved context for evaluation
+        source_chunks = None  # For CRAG responses
         
         if technique == "Adaptive RAG":
             # CRITICAL FIX: Use get_context_for_query() to get the EXACT context used for the answer
@@ -479,7 +485,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 # Generate the answer using the same context
                 response = rag_system.answer(query, silent=True)
                 
-                return response, context
+                return response, context, None
             except Exception as e:
                 # Fallback to old method if get_context_for_query is not available
                 response = rag_system.answer(query)
@@ -493,7 +499,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 except:
                     # Fallback if get_relevant_documents is not available
                     context = "Context from uploaded documents"
-                return response, context
+                return response, context, None
         
         elif technique == "CRAG":
             try:
@@ -504,20 +510,38 @@ def get_rag_response(technique: str, query: str, rag_system):
                 st.write("1. Retrieving documents from your uploaded files...")
                 st.write("2. Evaluating relevance to your query...")
                 
-                result = rag_system.run(query)
-                st.success("✅ CRAG analysis completed")
-                
-                # Try to extract actual context from CRAG system
-                try:
-                    # Get the documents that CRAG likely used
-                    docs = rag_system.get_relevant_documents(query)
-                    if docs:
-                        context = "\n".join([doc.page_content[:500] for doc in docs[:3]])
-                    else:
-                        context = "CRAG used web search or external sources"
-                except:
-                    # Fallback - extract from result if it contains source information
-                    context = str(result)[:1000] if result else "CRAG context not available"
+                # Use the enhanced run method that returns source chunks
+                if hasattr(rag_system, 'run_with_sources'):
+                    result_data = rag_system.run_with_sources(query)
+                    response = result_data['answer']
+                    source_chunks = result_data['source_chunks']
+                    sources = result_data['sources']
+                    
+                    st.success("✅ CRAG analysis completed")
+                    
+                    # Extract context for evaluation
+                    context = "\n".join([chunk['text'] for chunk in source_chunks])
+                    
+                    # Return response and context, source chunks will be stored via add_message
+                    return response, context, source_chunks
+                    
+                else:
+                    # Fallback to original method
+                    result = rag_system.run(query)
+                    response = result
+                    st.success("✅ CRAG analysis completed")
+                    
+                    # Try to extract context from CRAG system
+                    try:
+                        # Get the documents that CRAG likely used
+                        docs = rag_system.vectorstore.similarity_search(query, k=3)
+                        if docs:
+                            context = "\n".join([doc.page_content[:500] for doc in docs])
+                        else:
+                            context = "CRAG used web search or external sources"
+                    except:
+                        # Fallback - extract from result if it contains source information
+                        context = str(result)[:1000] if result else "CRAG context not available"
                 
                 # Add explanation of what CRAG did
                 st.info("""
@@ -529,7 +553,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 Check the response to see which source(s) were actually used!
                 """)
                 
-                return result, context
+                return response, context, None
             except Exception as crag_error:
                 error_msg = str(crag_error)
                 st.error(f"❌ CRAG Error: {error_msg}")
@@ -540,7 +564,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                 elif "rate" in error_msg.lower() or "quota" in error_msg.lower():
                     st.warning("⚠️ API rate limit reached. Please wait a moment and try again.")
                 
-                return f"CRAG failed with error: {error_msg}", ""
+                return f"CRAG failed with error: {error_msg}", "", None
         
         elif technique == "Document Augmentation":
             # For document augmentation, we need to retrieve and generate answer
@@ -549,9 +573,9 @@ def get_rag_response(technique: str, query: str, rag_system):
                 from document_augmentation import generate_answer
                 context = docs[0].metadata.get('text', docs[0].page_content)
                 response = generate_answer(context, query)
-                return response, context
+                return response, context, None
             else:
-                return "No relevant documents found.", ""
+                return "No relevant documents found.", "", None
         
         elif technique == "Basic RAG":
             # Basic similarity search
@@ -560,9 +584,9 @@ def get_rag_response(technique: str, query: str, rag_system):
                 context = "\n".join([doc.page_content for doc in docs])
                 # Simple context-based response
                 response = f"Based on the documents:\n\n{context[:500]}..."
-                return response, context
+                return response, context, None
             else:
-                return "No relevant documents found.", ""
+                return "No relevant documents found.", "", None
         
         elif technique == "Explainable Retrieval":
             try:
@@ -595,7 +619,7 @@ def get_rag_response(technique: str, query: str, rag_system):
                     else:
                         st.write("No detailed explanations available.")
                 
-                return answer, context
+                return answer, context, None
                     
             except Exception as er_error:
                 error_msg = str(er_error)
@@ -607,12 +631,12 @@ def get_rag_response(technique: str, query: str, rag_system):
                 elif "rate" in error_msg.lower() or "quota" in error_msg.lower():
                     st.warning("⚠️ API rate limit reached. Please wait a moment and try again.")
                 
-                return f"Explainable Retrieval failed with error: {error_msg}", ""
+                return f"Explainable Retrieval failed with error: {error_msg}", "", None
                 
     except Exception as e:
-        return f"Error generating response: {str(e)}", ""
+        return f"Error generating response: {str(e)}", "", None
 
-def add_message(role: str, content: str, technique: str = None, query_id: str = None):
+def add_message(role: str, content: str, technique: str = None, query_id: str = None, source_chunks: list = None):
     """Add message to session state and save to database"""
     message = {
         "id": str(uuid.uuid4()),
@@ -623,6 +647,10 @@ def add_message(role: str, content: str, technique: str = None, query_id: str = 
         "timestamp": datetime.now().isoformat()
     }
     st.session_state.messages.append(message)
+    
+    # Store source chunks if provided (for CRAG responses)
+    if source_chunks and role == "assistant":
+        st.session_state.last_source_chunks[message["id"]] = source_chunks
     
     # Auto-save to persistent storage
     auto_save_chat()
@@ -700,6 +728,54 @@ def collect_user_feedback(query_id: str, message_id: str):
                     del st.session_state.pending_feedback[query_id]
                 st.rerun()
 
+def display_source_documents(message_id: str, source_chunks: List[Dict]):
+    """Display source document links for a specific message"""
+    if not source_chunks:
+        return
+    
+    # Group chunks by document
+    docs_with_chunks = {}
+    for chunk in source_chunks:
+        doc_path = chunk['source']
+        if doc_path not in docs_with_chunks:
+            docs_with_chunks[doc_path] = []
+        docs_with_chunks[doc_path].append(chunk)
+    
+    # Create links for each document
+    st.markdown("### 📄 Source Documents:")
+    for doc_path, chunks in docs_with_chunks.items():
+        col1, col2, col3 = st.columns([3, 1, 1])
+        with col1:
+            doc_name = os.path.basename(doc_path) if doc_path != 'Unknown' else 'Uploaded Document'
+            st.write(f"**{doc_name}** - {len(chunks)} chunk(s) used")
+            avg_score = sum(chunk.get('score', 0) for chunk in chunks) / len(chunks)
+            st.caption(f"Average relevance score: {avg_score:.2f}")
+        with col2:
+            # Button to view in new tab
+            if doc_path != 'Unknown':
+                create_document_link(
+                    doc_path, 
+                    chunks, 
+                    "🔗 New Tab"
+                )
+        with col3:
+            # Button to view embedded - use message_id to make keys unique
+            embed_key = f"embed_{message_id}_{hash(doc_path)}"
+            show_key = f'show_doc_{message_id}_{hash(doc_path)}'
+            if st.button(f"👁️ View Here", key=embed_key):
+                st.session_state[show_key] = True
+                st.rerun()
+    
+    # Show embedded viewers if requested
+    for doc_path, chunks in docs_with_chunks.items():
+        show_key = f'show_doc_{message_id}_{hash(doc_path)}'
+        if st.session_state.get(show_key, False):
+            show_embedded_document_viewer(doc_path, chunks, use_expander=False, message_id=message_id)
+            hide_key = f"hide_{message_id}_{hash(doc_path)}"
+            if st.button(f"❌ Hide {os.path.basename(doc_path)}", key=hide_key):
+                st.session_state[show_key] = False
+                st.rerun()
+
 def display_message(message: Dict[str, Any], message_index: int = None):
     """Display a single message with delete functionality"""
     if message["role"] == "user":
@@ -755,6 +831,12 @@ def display_message(message: Dict[str, Any], message_index: int = None):
         query_id = message.get("query_id")
         if query_id and query_id in st.session_state.pending_feedback:
             collect_user_feedback(query_id, message["id"])
+        
+        # Show source documents for CRAG responses
+        if message.get("technique") == "CRAG" and message["id"] in st.session_state.last_source_chunks:
+            source_chunks = st.session_state.last_source_chunks[message["id"]]
+            if source_chunks:
+                display_source_documents(message["id"], source_chunks)
 
 def create_multi_document_basic_rag(document_paths: List[str], chunk_size=1000, chunk_overlap=200):
     """
@@ -839,6 +921,10 @@ def should_reload_rag_system(technique, document_paths):
 
 def main():
     """Main application function"""
+    # Check if this is a document viewer page first
+    if check_document_viewer_page():
+        return
+        
     initialize_session_state()
     
     # Get evaluation manager
@@ -1044,6 +1130,11 @@ def main():
         query = st.chat_input("Ask a question about your documents...")
         
         if query:
+            # Clear any previous document viewer states to prevent stale highlighting
+            keys_to_clear = [key for key in st.session_state.keys() if key.startswith('show_doc_')]
+            for key in keys_to_clear:
+                del st.session_state[key]
+            
             # Add user message
             add_message("user", query)
             
@@ -1065,7 +1156,7 @@ def main():
             start_time = time.time()
             
             with st.spinner(f"Generating response with {selected_technique}..."):
-                response, context = get_rag_response(selected_technique, query, rag_system)
+                response, context, source_chunks = get_rag_response(selected_technique, query, rag_system)
             
             processing_time = time.time() - start_time
             
@@ -1081,8 +1172,8 @@ def main():
                 session_id=st.session_state.session_id
             )
             
-            # Add bot response with query_id for feedback linking
-            add_message("assistant", response, selected_technique, query_id)
+            # Add bot response with query_id for feedback linking and source chunks
+            add_message("assistant", response, selected_technique, query_id, source_chunks)
             
             # Mark this response as pending feedback (Phase 1: User feedback collection)
             st.session_state.pending_feedback[query_id] = True

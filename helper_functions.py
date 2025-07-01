@@ -388,10 +388,59 @@ def encode_document(file_paths, chunk_size=1000, chunk_overlap=200):
     for file_path in file_paths:
         file_extension = os.path.splitext(file_path)[1].lower()
         # Choose appropriate loader based on file type
+        documents = None  # Initialize documents variable
+        loader = None     # Initialize loader variable
+        
         if file_extension == '.pdf':
             loader = PyPDFLoader(file_path)
         elif file_extension == '.txt':
-            loader = TextLoader(file_path, encoding='utf-8')
+            # Try direct file reading first (more reliable for temp files)
+            documents = None  # Initialize to track if we need to use loader
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Create a fake document object for compatibility
+                class SimpleDoc:
+                    def __init__(self, content, source):
+                        self.page_content = content
+                        self.metadata = {'source': source}
+                
+                documents = [SimpleDoc(content, file_path)]
+                print(f"✅ Used direct file reading for text file: {file_path}")
+                
+            except UnicodeDecodeError:
+                # Try multiple encodings for text files if UTF-8 fails
+                loader = None
+                for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                    try:
+                        loader = TextLoader(file_path, encoding=encoding)
+                        break
+                    except (UnicodeDecodeError, Exception):
+                        continue
+                
+                if loader is None:
+                    # Final fallback: try direct reading with different encodings
+                    for encoding in ['utf-16', 'latin-1', 'cp1252']:
+                        try:
+                            with open(file_path, 'r', encoding=encoding) as f:
+                                content = f.read()
+                            
+                            class SimpleDoc:
+                                def __init__(self, content, source):
+                                    self.page_content = content
+                                    self.metadata = {'source': source}
+                            
+                            documents = [SimpleDoc(content, file_path)]
+                            print(f"✅ Used direct file reading with {encoding} encoding: {file_path}")
+                            break
+                        except Exception:
+                            continue
+                    else:
+                        raise ValueError(f"Could not decode text file {file_path} with any supported encoding")
+                # If loader is not None, we'll use it below to load documents
+            except Exception as e:
+                raise ValueError(f"Could not read text file {file_path}: {e}")
         elif file_extension == '.csv':
             loader = CSVLoader(file_path)
         elif file_extension == '.json':
@@ -402,24 +451,75 @@ def encode_document(file_paths, chunk_size=1000, chunk_overlap=200):
             loader = UnstructuredExcelLoader(file_path)
         else:
             raise ValueError(f"Unsupported file type: {file_extension}. Supported formats: PDF, TXT, CSV, JSON, DOCX, XLSX")
-        print(f"Loading {file_extension.upper()} file: {file_path}")
-        # Load documents
-        documents = loader.load()
+        
+        # Load documents (only call loader.load() if we have a loader and haven't already loaded documents)
+        if documents is None and loader is not None:
+            # We have a loader, use it
+            try:
+                documents = loader.load()
+                print(f"✅ Successfully loaded using {type(loader).__name__}: {file_path}")
+            except Exception as e:
+                print(f"❌ Loader failed for {file_path}: {e}")
+                # Try fallback loading for any file type
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    
+                    class SimpleDoc:
+                        def __init__(self, content, source):
+                            self.page_content = content
+                            self.metadata = {'source': source}
+                    
+                    documents = [SimpleDoc(content, file_path)]
+                    print(f"✅ Used fallback direct reading for: {file_path}")
+                except Exception as fallback_error:
+                    raise ValueError(f"Could not load {file_path} with any method. Loader error: {e}, Fallback error: {fallback_error}")
+        elif documents is None:
+            # No documents and no loader - this should not happen
+            raise ValueError(f"No documents loaded and no loader available for {file_path}")
+        # If documents already exists, we used direct file reading
+        
+        print(f"✅ Successfully loaded {file_extension.upper()} file: {os.path.basename(file_path)} ({len(documents)} document(s))")
+        
+        # Debug: Print original document page info
+        print(f"\n=== Original PDF documents (before chunking) ===")
+        for i, doc in enumerate(documents):
+            page_info = doc.metadata.get('page', 'MISSING')
+            print(f"Document {i}: Page: {page_info}, Content: {doc.page_content[:100]}...")
+        
         # Split documents into chunks
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap, length_function=len
         )
         texts = text_splitter.split_documents(documents)
         cleaned_texts = replace_t_with_space(texts)
+        
         # Add metadata: source (filename), page (if available), paragraph (chunk index)
         for i, doc in enumerate(cleaned_texts):
             doc.metadata['source'] = file_path
             if file_extension == '.pdf':
-                page = doc.metadata.get('page', None)
-                if page is not None and page != 0:
-                    doc.metadata['page'] = page
+                # Fix page number assignment
+                original_page = doc.metadata.get('page', None)
+                
+                # If page is missing, 0, or invalid, try to map it properly
+                if original_page is None or original_page == 0:
+                    # Find the source document this chunk came from by matching content
+                    chunk_start = doc.page_content[:100]  # First 100 chars
+                    mapped_page = 1  # Default fallback
+                    
+                    for j, orig_doc in enumerate(documents):
+                        if chunk_start in orig_doc.page_content:
+                            # Found the source document, use its page number
+                            orig_page = orig_doc.metadata.get('page', j + 1)
+                            mapped_page = orig_page if orig_page and orig_page > 0 else j + 1
+                            break
+                    
+                    doc.metadata['page'] = mapped_page
+                    print(f"Chunk {i}: Mapped page {mapped_page} for chunk starting with: {chunk_start[:50]}...")
                 else:
-                    doc.metadata['page'] = i + 1
+                    # Use the original page number if it's valid
+                    doc.metadata['page'] = original_page
+                    print(f"Chunk {i}: Using original page {original_page}")
             else:
                 doc.metadata['page'] = None
             doc.metadata['paragraph'] = i + 1
