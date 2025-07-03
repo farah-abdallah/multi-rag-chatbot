@@ -308,6 +308,23 @@ st.markdown("""
         background: #ff3742 !important;
         transform: scale(1.1) !important;
     }
+    
+    .source-reference {
+        color: #0066cc !important;
+        font-size: 0.85em !important;
+        font-style: italic !important;
+        background: rgba(0, 102, 204, 0.1) !important;
+        padding: 2px 6px !important;
+        border-radius: 4px !important;
+        border-left: 3px solid #0066cc !important;
+        margin: 0 2px !important;
+        display: inline-block !important;
+    }
+    
+    .source-reference:hover {
+        background: rgba(0, 102, 204, 0.2) !important;
+        cursor: pointer !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 

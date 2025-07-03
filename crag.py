@@ -249,11 +249,23 @@ Relevance score:"""
             return 0.3  # Lower default score if parsing fails
     
     def knowledge_refinement(self, document):
-        prompt_text = f"""Extract the key information from the following document in bullet points:
+        prompt_text = f"""Extract ALL the information that is explicitly stated in the provided document.
+DO NOT add external knowledge, explanations, or details not present in the text.
 
+STRICT REQUIREMENTS:
+- Use ONLY information directly from the document
+- Do NOT elaborate or explain beyond what's written
+- Do NOT add general knowledge about the topic
+- If the document doesn't provide details, don't invent them
+- Extract ALL relevant information present in the text, not just parts of it
+- Preserve the complete meaning of statements
+- Include both positive and negative aspects if mentioned
+- Maximum 5 key points per document to ensure completeness
+
+Document:
 {document}
 
-Key points:"""
+Extract ALL the explicit information found in the text (preserve complete statements):"""
         
         result = self._call_llm_with_retry(prompt_text)
         
@@ -494,25 +506,52 @@ Rewritten query:"""
             else:
                 source_info = "Based on your uploaded document:"
 
-        prompt_text = f"""Answer the following query using the provided knowledge. 
-Be clear about your sources and use the exact source attribution provided. Do not mention web search unless the source attribution below says so.
+        prompt_text = f"""Answer the question using ONLY the information provided in the knowledge base.
+DO NOT add information from your general knowledge or external sources.
 
-For any part of the answer that comes directly from the uploaded document, enclose the exact span (sentence, phrase, or paragraph) in double quotation marks (""). If you paraphrase, also quote the original span you used. If the answer is synthesized from multiple parts, quote each relevant span. If the answer is from web search, do not quote anything from the document.
+STRICT GUIDELINES:
+- Use ONLY the provided knowledge - nothing more
+- Include ALL relevant information from the sources that answers the question
+- If the knowledge is limited, be honest about limitations but provide what is available
+- Do NOT elaborate beyond the source material
+- Present information completely - don't omit parts of statements
+- Keep responses focused but comprehensive based on available sources
+- Do NOT invent details or explanations not in the sources
+
+CRITICAL: For any information from uploaded documents, include source reference: [Source: DOCUMENT_NAME, page X, paragraph Y]
 
 Query: {query}
 
 {source_info}
+Available Knowledge (use ONLY this information):
 {knowledge}
 
 Sources:
 {sources_text}
 
-Provide a clear, accurate answer and mention the sources appropriately. If the information comes from web search, explicitly state that. If from uploaded documents, state that clearly.
+Provide a complete answer using ALL the relevant information provided:
 
 Answer:"""
 
         result = self._call_llm_with_retry(prompt_text)
-        return result.content
+        
+        # Validate response against sources to prevent hallucination
+        response_content = result.content
+        
+        # Basic validation: check response length vs source material
+        if hasattr(self, '_last_source_chunks') and self._last_source_chunks:
+            source_text = " ".join([chunk.get('text', '') for chunk in self._last_source_chunks])
+            source_words = len(source_text.split())
+            response_words = len(response_content.split())
+            
+            if response_words > source_words * 0.5:
+                print(f"⚠️ Warning: Response ({response_words} words) may exceed source material ({source_words} words)")
+                print("   Response may contain hallucinated information")
+        
+        # Format source references with color for better readability
+        formatted_response = self._format_sources_with_color(response_content)
+        
+        return formatted_response
 
     def run(self, query):
         """CRAG with robust multi-document retrieval and fallback"""
@@ -547,14 +586,23 @@ Answer:"""
             max_idx = eval_scores.index(max_score) if eval_scores else -1
 
             if relevant_chunks:
-                print("\nAction: Correct - Using all relevant document chunks above threshold")
-                final_knowledge = "\n".join([doc for doc, meta, score in relevant_chunks])
+                print("\nAction: Correct - Using relevant document chunks above threshold")
+                # Limit chunks to prevent verbosity - use top 3 most relevant
+                relevant_chunks = relevant_chunks[:3]
+                print(f"🔍 CRAG: Limited to top {len(relevant_chunks)} chunks to prevent verbosity")
+                
+                # Process each chunk through knowledge refinement
+                refined_knowledge_parts = []
                 for doc, metadata, score in relevant_chunks:
-                    doc_name = metadata.get('source', 'Unknown document')
-                    if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
-                        doc_name += f", page {metadata['page']}"
-                    if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
-                        doc_name += f", paragraph {metadata['paragraph']}"
+                    # Apply knowledge refinement to extract key points
+                    refined_points = self.knowledge_refinement(doc)
+                    if isinstance(refined_points, list):
+                        # Allow more points per chunk to capture complete information
+                        refined_knowledge_parts.extend(refined_points[:4])  # Max 4 points per chunk
+                    else:
+                        refined_knowledge_parts.append(str(refined_points))
+                    
+                    doc_name = self._create_source_name(metadata)
                     sources.append((doc_name, ""))
                     
                     # Store source chunks for document viewing - use more inclusive threshold for highlighting
@@ -570,7 +618,11 @@ Answer:"""
                         })
                     else:
                         print(f"🚫 CRAG: Skipping chunk for highlighting (score: {score:.2f} < 0.5)")
-                        print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")  
+                        print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")
+                
+                # Combine all refined knowledge while removing duplicates
+                final_knowledge = "\n".join(list(dict.fromkeys(refined_knowledge_parts)))  # Remove duplicates while preserving order
+                print(f"\n🔍 CRAG: Refined knowledge from {len(relevant_chunks)} chunks into {len(refined_knowledge_parts)} key points")
             elif max_score < self.lower_threshold:
                 print("\nAction: Incorrect - Performing web search")
                 try:
@@ -586,11 +638,7 @@ Answer:"""
                             if max_idx != -1:
                                 best_doc, metadata = all_docs[max_idx]
                                 retrieved_knowledge = self.knowledge_refinement(best_doc)
-                                doc_name = metadata.get('source', 'Unknown document')
-                                if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
-                                    doc_name += f", page {metadata['page']}"
-                                if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
-                                    doc_name += f", paragraph {metadata['paragraph']}"
+                                doc_name = self._create_source_name(metadata)
                                 final_knowledge = "[No relevant chunk found above threshold or from web search. Using best available chunk from your uploaded documents (low confidence):]\n"
                                 if isinstance(retrieved_knowledge, list):
                                     final_knowledge += "\n".join(retrieved_knowledge)
@@ -599,19 +647,7 @@ Answer:"""
                                 sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
                                 
                                 # Store fallback source chunk for document viewing - only if reasonably relevant
-                                if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
-                                    print(f"📌 CRAG FALLBACK: Storing chunk for highlighting (score: {max_score:.2f})")
-                                    print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
-                                    self._last_source_chunks.append({
-                                        'text': best_doc,
-                                        'source': metadata.get('source', 'Unknown'),
-                                        'page': metadata.get('page'),
-                                        'paragraph': metadata.get('paragraph'),
-                                        'score': max_score
-                                    })
-                                else:
-                                    print(f"🚫 CRAG FALLBACK: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
-                                    print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
+                                self._store_chunk_for_highlighting(best_doc, metadata, max_score, threshold=0.4, context="FALLBACK")
                             else:
                                 final_knowledge = "I cannot answer your question. The provided sources indicate that a web search did not return any relevant results, and no relevant information was found in your uploaded documents."
                                 sources = [("Web search failure", "")]
@@ -628,11 +664,7 @@ Answer:"""
                         if max_idx != -1:
                             best_doc, metadata = all_docs[max_idx]
                             retrieved_knowledge = self.knowledge_refinement(best_doc)
-                            doc_name = metadata.get('source', 'Unknown document')
-                            if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
-                                doc_name += f", page {metadata['page']}"
-                            if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
-                                doc_name += f", paragraph {metadata['paragraph']}"
+                            doc_name = self._create_source_name(metadata)
                             final_knowledge = "[No relevant chunk found above threshold or from web search. Using best available chunk from your uploaded documents (low confidence):]\n"
                             if isinstance(retrieved_knowledge, list):
                                 final_knowledge += "\n".join(retrieved_knowledge)
@@ -641,19 +673,7 @@ Answer:"""
                             sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
                             
                             # Store fallback source chunk for document viewing - only if reasonably relevant
-                            if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
-                                print(f"📌 CRAG FALLBACK 2: Storing chunk for highlighting (score: {max_score:.2f})")
-                                print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
-                                self._last_source_chunks.append({
-                                    'text': best_doc,
-                                    'source': metadata.get('source', 'Unknown'),
-                                    'page': metadata.get('page'),
-                                    'paragraph': metadata.get('paragraph'),
-                                    'score': max_score
-                                })
-                            else:
-                                print(f"🚫 CRAG FALLBACK 2: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
-                                print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
+                            self._store_chunk_for_highlighting(best_doc, metadata, max_score, threshold=0.4, context="FALLBACK")
                         else:
                             final_knowledge = f"Web search failed and no relevant information was found in your uploaded documents. Error: {str(web_error)}"
                             sources = [("Error", "")]
@@ -669,28 +689,12 @@ Answer:"""
                 else:
                     best_doc, metadata = all_docs[max_idx]
                     retrieved_knowledge = self.knowledge_refinement(best_doc)
-                    doc_name = metadata.get('source', 'Unknown document')
-                    if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
-                        doc_name += f", page {metadata['page']}"
-                    if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
-                        doc_name += f", paragraph {metadata['paragraph']}"
+                    doc_name = self._create_source_name(metadata)
                     final_knowledge = "[Low confidence: No chunk was highly relevant, but this is the best available information:]\n" + ("\n".join(retrieved_knowledge) if isinstance(retrieved_knowledge, list) else str(retrieved_knowledge))
                     sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
                     
                     # Store fallback source chunk for document viewing - only if reasonably relevant
-                    if max_score >= 0.4:  # Only highlight fallback chunks with reasonable relevance
-                        print(f"📌 CRAG FALLBACK 3: Storing chunk for highlighting (score: {max_score:.2f})")
-                        print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")
-                        self._last_source_chunks.append({
-                            'text': best_doc,
-                            'source': metadata.get('source', 'Unknown'),
-                            'page': metadata.get('page'),
-                            'paragraph': metadata.get('paragraph'),
-                            'score': max_score
-                        })
-                    else:
-                        print(f"🚫 CRAG FALLBACK 3: Skipping chunk for highlighting (score: {max_score:.2f} < 0.4)")
-                        print(f"   Text preview: '{best_doc[:100]}{'...' if len(best_doc) > 100 else ''}'")  
+                    self._store_chunk_for_highlighting(best_doc, metadata, max_score, threshold=0.4, context="FALLBACK")
 
             print("\nFinal knowledge:")
             print(final_knowledge[:500] + "..." if len(str(final_knowledge)) > 500 else str(final_knowledge))
@@ -788,6 +792,98 @@ Answer:"""
         
         raise Exception("Max retries exceeded")
 
+    def _create_source_name(self, metadata):
+        """Helper method to create consistent source names with page/paragraph info"""
+        raw_source = metadata.get('source', 'Unknown document')
+        
+        # Extract clean filename from path (handles both Windows and Unix paths)
+        import os
+        if raw_source and raw_source != 'Unknown document':
+            doc_name = os.path.basename(raw_source)
+            # Remove any temporary file prefixes if present
+            if doc_name.startswith('tmp') and '\\' in doc_name:
+                doc_name = doc_name.split('\\')[-1]
+        else:
+            doc_name = 'Unknown document'
+            
+        if 'page' in metadata and metadata['page'] not in [None, '', 'None']:
+            doc_name += f", page {metadata['page']}"
+        if 'paragraph' in metadata and metadata['paragraph'] not in [None, '', 'None']:
+            doc_name += f", paragraph {metadata['paragraph']}"
+        return doc_name
+
+    def _store_chunk_for_highlighting(self, doc, metadata, score, threshold=0.4, context=""):
+        """Helper method to conditionally store chunks for document highlighting"""
+        if score >= threshold:
+            print(f"📌 CRAG {context}: Storing chunk for highlighting (score: {score:.2f})")
+            print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")
+            self._last_source_chunks.append({
+                'text': doc,
+                'source': metadata.get('source', 'Unknown'),
+                'page': metadata.get('page'),
+                'paragraph': metadata.get('paragraph'),
+                'score': score
+            })
+        else:
+            print(f"🚫 CRAG {context}: Skipping chunk for highlighting (score: {score:.2f} < {threshold})")
+            print(f"   Text preview: '{doc[:100]}{'...' if len(doc) > 100 else ''}'")
+
+    def _create_fallback_response(self, all_docs, eval_scores, context="FALLBACK"):
+        """Helper method to create fallback response from best available chunk"""
+        if not all_docs or not eval_scores:
+            return "No relevant information found.", [("No sources available", "")]
+        
+        max_score = max(eval_scores)
+        max_idx = eval_scores.index(max_score)
+        best_doc, metadata = all_docs[max_idx]
+        
+        retrieved_knowledge = self.knowledge_refinement(best_doc)
+        doc_name = self._create_source_name(metadata)
+        
+        final_knowledge = "[No relevant chunk found above threshold or from web search. Using best available chunk from your uploaded documents (low confidence):]\n"
+        if isinstance(retrieved_knowledge, list):
+            final_knowledge += "\n".join(retrieved_knowledge)
+        else:
+            final_knowledge += str(retrieved_knowledge)
+        
+        sources = [(doc_name + " (fallback: best available chunk, low confidence)", "")]
+        
+        # Store fallback source chunk for document viewing - only if reasonably relevant
+        self._store_chunk_for_highlighting(best_doc, metadata, max_score, threshold=0.4, context=context)
+        
+        return final_knowledge, sources
+
+    def _handle_web_search_failure(self, all_docs, eval_scores, error_msg=""):
+        """Helper method to handle web search failures with document fallback"""
+        if all_docs and len(all_docs) > 0:
+            final_knowledge, sources = self._create_fallback_response(
+                all_docs, eval_scores, "FALLBACK (web search failed)"
+            )
+        else:
+            error_suffix = f" Error: {error_msg}" if error_msg else ""
+            final_knowledge = f"I cannot answer your question. The provided sources indicate that a web search did not return any relevant results, and no relevant information was found in your uploaded documents.{error_suffix}"
+            sources = [("Web search failure", "")]
+        
+        return final_knowledge, sources
+
+    def _format_sources_with_color(self, response_text):
+        """
+        Post-process the response to add colored formatting to source references
+        """
+        import re
+        
+        # Pattern to match source references in brackets: [Source: filename, page X, paragraph Y]
+        source_pattern = r'\[Source: ([^\]]+)\]'
+        
+        def replace_source(match):
+            source_text = match.group(1)
+            # Format with HTML and CSS class for colored display in Streamlit
+            return f'<span class="source-reference">[Source: {source_text}]</span>'
+        
+        # Replace all source references with colored versions
+        formatted_response = re.sub(source_pattern, replace_source, response_text)
+        
+        return formatted_response
 
 # Function to validate command line inputs
 def validate_args(args):

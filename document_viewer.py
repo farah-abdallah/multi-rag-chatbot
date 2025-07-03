@@ -169,7 +169,7 @@ def highlight_text_in_document(document_path: str, chunks_to_highlight: List[Dic
                         print(f"   Extracted section: {len(complete_section)} chars")
                         print(f"   Section preview: '{complete_section[:100]}...'")
                         
-                        color = f"hsl({(highlighted_count * 60) % 360}, 70%, 85%)"
+                        color = "hsl(45, 80%, 85%)"  # Consistent yellow highlight
                         highlighted_text = f'<mark style="background-color: {color}; padding: 2px 4px; border-radius: 3px; border: 1px solid #ccc;">{complete_section}</mark>'
                         highlighted_content = highlighted_content.replace(complete_section, highlighted_text, 1)
                         highlighted_count += 1
@@ -184,7 +184,7 @@ def highlight_text_in_document(document_path: str, chunks_to_highlight: List[Dic
                 for phrase in key_phrases:
                     if phrase.strip() and phrase in highlighted_content:
                         print(f"   ✅ Highlighting: '{phrase[:50]}...'")
-                        color = f"hsl({(highlighted_count * 60) % 360}, 70%, 85%)"
+                        color = "hsl(45, 80%, 85%)"  # Consistent yellow highlight
                         highlighted_text = f'<mark style="background-color: {color}; padding: 2px 4px; border-radius: 3px; border: 1px solid #ccc;">{phrase}</mark>'
                         highlighted_content = highlighted_content.replace(phrase, highlighted_text, 1)
                         phrases_highlighted += 1
@@ -208,7 +208,7 @@ def highlight_text_in_document(document_path: str, chunks_to_highlight: List[Dic
                 for piece in meaningful_pieces[:3]:  # Try first 3 substantial pieces
                     if piece in highlighted_content:
                         print(f"   ✅ Found piece: '{piece[:50]}...'")
-                        color = f"hsl({(highlighted_count * 60) % 360}, 70%, 85%)"
+                        color = "hsl(45, 80%, 85%)"  # Consistent yellow highlight
                         highlighted_text = f'<mark style="background-color: {color}; padding: 2px 4px; border-radius: 3px; border: 1px solid #ccc;">{piece}</mark>'
                         highlighted_content = highlighted_content.replace(piece, highlighted_text, 1)
                         highlighted_found = True
@@ -251,25 +251,56 @@ def create_document_link(document_path: str, chunks_to_highlight: List[Dict], li
             st.warning("No text chunks available to highlight")
             return
         
-        # Create JavaScript to open new window with document viewer
+        # Create unique function name to avoid conflicts
+        import json
+        import urllib.parse
         doc_name = os.path.basename(document_path)
-        # Fix backslash issue by preparing the path outside f-string
-        escaped_path = document_path.replace("\\", "\\\\")
+        function_id = abs(hash(doc_name + str(len(chunks_text))))
+        
+        # Properly escape the document path and chunks for JavaScript
+        escaped_path = json.dumps(document_path)  # This handles all escaping
+        escaped_chunks = json.dumps(chunks_text)  # This handles all escaping
+        
+        # Improved JavaScript with better error handling and debugging
         js_code = f"""
         <script>
-        function openDocViewer_{hash(doc_name)}() {{
-            const chunks = {chunks_text};
-            const docPath = '{escaped_path}';
-            const url = window.location.origin + window.location.pathname + '?page=document_viewer&doc_path=' + encodeURIComponent(docPath) + '&chunks=' + encodeURIComponent(JSON.stringify(chunks));
-            window.open(url, '_blank', 'width=1200,height=800,scrollbars=yes,resizable=yes');
+        function openDocViewer_{function_id}() {{
+            try {{
+                console.log('Opening document viewer...');
+                const chunks = {escaped_chunks};
+                const docPath = {escaped_path};
+                
+                // Build the URL properly
+                const baseUrl = window.location.origin + window.location.pathname;
+                const params = new URLSearchParams();
+                params.set('page', 'document_viewer');
+                params.set('doc_path', docPath);
+                params.set('chunks', JSON.stringify(chunks));
+                
+                const url = baseUrl + '?' + params.toString();
+                console.log('Opening URL:', url);
+                
+                // Try to open the window
+                const newWindow = window.open(url, '_blank', 'width=1200,height=800,scrollbars=yes,resizable=yes,toolbar=yes,menubar=yes');
+                
+                if (!newWindow) {{
+                    // Fallback: show alert with URL if popup was blocked
+                    alert('Pop-up blocked! Please copy this URL and open it in a new tab:\\n\\n' + url);
+                }} else {{
+                    console.log('Window opened successfully');
+                }}
+            }} catch (error) {{
+                console.error('Error opening document viewer:', error);
+                alert('Error opening document viewer: ' + error.message);
+            }}
         }}
         </script>
         """
         
-        # Create the button
+        # Create the button with improved styling and hover effects
         button_html = f"""
         {js_code}
-        <button onclick="openDocViewer_{hash(doc_name)}()" style="
+        <button onclick="openDocViewer_{function_id}()" style="
             display: inline-block;
             padding: 0.5rem 1rem;
             background-color: #0066cc;
@@ -280,13 +311,40 @@ def create_document_link(document_path: str, chunks_to_highlight: List[Dict], li
             cursor: pointer;
             font-size: 14px;
             margin: 5px;
-        ">{link_text}</button>
+            transition: background-color 0.2s;
+        " onmouseover="this.style.backgroundColor='#0052a3'" 
+           onmouseout="this.style.backgroundColor='#0066cc'"
+           title="Open document viewer in new tab">{link_text}</button>
         """
         
         st.markdown(button_html, unsafe_allow_html=True)
         
+        # Add a fallback option with a copyable URL
+        try:
+            import urllib.parse
+            base_url = "http://localhost:8501"  # Default Streamlit URL
+            params = urllib.parse.urlencode({
+                'page': 'document_viewer',
+                'doc_path': document_path,
+                'chunks': json.dumps(chunks_text)
+            })
+            fallback_url = f"{base_url}?{params}"
+            
+            # Show the URL in a small expander for manual copying if needed
+            with st.expander("🔗 Manual link (if button doesn't work)", expanded=False):
+                st.text_input(
+                    "Copy this URL to open in new tab:",
+                    value=fallback_url,
+                    key=f"url_fallback_{function_id}",
+                    help="If the button above doesn't work, copy this URL and paste it in a new browser tab"
+                )
+        except Exception as fallback_error:
+            st.caption("Fallback URL generation failed")
+        
     except Exception as e:
         st.error(f"Error creating document link: {str(e)}")
+        # Show the error details for debugging
+        st.write(f"Debug info: document_path={document_path}, chunks_count={len(chunks_to_highlight)}")
 
 def show_embedded_document_viewer(doc_path: str, chunks_to_highlight: List[Dict], use_expander: bool = True, message_id: str = None) -> None:
     """

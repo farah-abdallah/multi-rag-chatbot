@@ -14,14 +14,14 @@ def main():
     print("🔧 Real-World Highlighting Test")
     print("=" * 50)
     
-    # Initialize CRAG
-    crag = CRAG()
-    
     # Test with sleep document
     pdf_path = "The_Importance_of_Sleep (1).pdf"
     if not os.path.exists(pdf_path):
         print(f"❌ PDF not found: {pdf_path}")
         return
+    
+    # Initialize CRAG with the document
+    crag = CRAG(pdf_path, web_search_enabled=False)
     
     # Test question about sleep benefits
     question = "What are the benefits of sleep for memory and learning?"
