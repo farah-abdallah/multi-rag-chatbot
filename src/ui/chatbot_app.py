@@ -1050,10 +1050,215 @@ def build_conversation_context(messages, max_turns=3):
     for msg in recent_messages:
         role = "User" if msg["role"] == "user" else "Assistant"
         conversation_lines.append(f"{role}: {msg['content']}")
+    # Join into a single string with line breaks
+    conversation_context = "\n".join(conversation_lines)
+    return conversation_context
+
+def create_multi_document_basic_rag(document_paths: List[str], chunk_size=1000, chunk_overlap=200):
+    """
+    Create a Basic RAG system that can handle multiple documents by combining them into a single vectorstore.
+    """
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain_core.documents import Document
+    
+    try:
+        all_documents = []
+        processed_files = []
+        
+        # Load and process each document
+        for file_path in document_paths:
+            try:
+                content = load_document_content(file_path)
+                file_name = os.path.basename(file_path)
+                
+                # Create a document with metadata
+                doc = Document(
+                    page_content=content,
+                    metadata={"source": file_name, "file_path": file_path}
+                )
+                all_documents.append(doc)
+                processed_files.append(file_name)
+                
+            except Exception as e:
+                st.warning(f"⚠️ Could not process {os.path.basename(file_path)}: {str(e)}")
+        
+        if not all_documents:
+            raise ValueError("No documents could be processed successfully")
+        
+        st.success(f"✅ Loaded {len(processed_files)} documents: {', '.join(processed_files)}")
+        
+        # Split documents into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, 
+            chunk_overlap=chunk_overlap, 
+            length_function=len
+        )
+        texts = text_splitter.split_documents(all_documents)
+        
+        # Clean the texts (remove tab characters)
+        cleaned_texts = replace_t_with_space(texts)
+        
+        # Create embeddings and vector store using local embeddings
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        vectorstore = FAISS.from_documents(cleaned_texts, embeddings)
+        
+        st.info(f"Created vectorstore with {len(cleaned_texts)} chunks from {len(processed_files)} documents")
+        
+        return vectorstore
+        
+    except Exception as e:
+        st.error(f"Error creating multi-document Basic RAG: {str(e)}")
+        return None
+
+def get_document_hash(document_paths):
+    """Create a hash of the current document list to detect changes"""
+    if not document_paths:
+        return None
+    # Sort paths and create a simple hash
+    sorted_paths = sorted(document_paths)
+    return hash(tuple(sorted_paths))
+
+def should_reload_rag_system(technique, document_paths):
+    """Check if RAG system should be reloaded due to document changes"""
+    current_hash = get_document_hash(document_paths)
+    
+    # If documents changed, clear all cached systems
+    if current_hash != st.session_state.last_document_hash:
+        st.session_state.rag_systems = {}
+        st.session_state.last_document_hash = current_hash
+        return True
+    
+    # If system not loaded for this technique, need to load
+    return technique not in st.session_state.rag_systems
+
+def build_conversation_context(messages, max_turns=3):
+    """
+    Build a context string from the last N conversation turns.
+    This allows the chatbot to remember and reference previous exchanges.
+    
+    Args:
+        messages: List of message dictionaries from session state
+        max_turns: Maximum number of conversation turns to include
+        
+    Returns:
+        String with formatted conversation history
+    """
+    # Only use recent messages (limited by max_turns)
+    recent_messages = messages[-max_turns*2:] if len(messages) > max_turns*2 else messages
+    
+    # Format the conversation
+    conversation_lines = []
+    for msg in recent_messages:
+        role = "User" if msg["role"] == "user" else "Assistant"
+        conversation_lines.append(f"{role}: {msg['content']}")
     
     # Join into a single string with line breaks
     conversation_context = "\n".join(conversation_lines)
     return conversation_context
+# === CHAT SESSION MANAGEMENT ===
+
+def get_all_chat_sessions():
+    """Get all chat sessions with their first message as title"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT session_id, MIN(timestamp) as first_message_time,
+                   (SELECT content FROM chat_sessions cs2 
+                    WHERE cs2.session_id = cs1.session_id 
+                    AND cs2.message_type = 'user' 
+                    ORDER BY timestamp ASC LIMIT 1) as first_message
+            FROM chat_sessions cs1
+            GROUP BY session_id
+            ORDER BY first_message_time DESC
+        ''')
+        
+        sessions = []
+        for row in cursor.fetchall():
+            session_id, timestamp, first_message = row
+            # Create a readable title from the first message
+            if first_message:
+                title = first_message[:50] + "..." if len(first_message) > 50 else first_message
+            else:
+                title = f"Chat {session_id[-8:]}"
+            
+            sessions.append({
+                'session_id': session_id,
+                'title': title,
+                'timestamp': timestamp,
+                'first_message': first_message
+            })
+        
+        conn.close()
+        return sessions
+    except Exception as e:
+        print(f"Error getting chat sessions: {e}")
+        return []
+
+def create_new_chat_session():
+    """Create a new chat session"""
+    new_session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(str(datetime.now()))}"
+    st.session_state.persistent_session_id = new_session_id
+    st.session_state.messages = []
+    st.session_state.last_saved_count = 0
+    st.session_state.pending_feedback = {}
+    return new_session_id
+
+def switch_to_chat_session(session_id):
+    """Switch to a specific chat session"""
+    if session_id != st.session_state.get('persistent_session_id'):
+        st.session_state.persistent_session_id = session_id
+        st.session_state.messages = load_chat_history(session_id)
+        st.session_state.last_saved_count = len(st.session_state.messages)
+        st.session_state.pending_feedback = {}
+        return True
+    return False
+
+def delete_chat_session(session_id):
+    """Delete an entire chat session"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM chat_sessions WHERE session_id = ?', (session_id,))
+        conn.commit()
+        conn.close()
+        
+        # If we're deleting the current session, create a new one
+        if session_id == st.session_state.get('persistent_session_id'):
+            create_new_chat_session()
+        
+        return True
+    except Exception as e:
+        print(f"Error deleting chat session: {e}")
+        return False
+
+def rename_chat_session(session_id, new_title):
+    """Rename a chat session by updating its first message"""
+    try:
+        conn = sqlite3.connect('chat_history.db')
+        cursor = conn.cursor()
+        # Update the first user message content to serve as the title
+        cursor.execute('''
+            UPDATE chat_sessions 
+            SET content = ?
+            WHERE session_id = ?
+            AND message_type = 'user'
+            AND timestamp = (
+                SELECT MIN(timestamp) 
+                FROM chat_sessions 
+                WHERE session_id = ? AND message_type = 'user'
+            )
+        ''', (new_title, session_id, session_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Error renaming chat session: {e}")
+        return False
+
+# === END CHAT SESSION MANAGEMENT ===
 
 def main():
     """Main application function"""
@@ -1095,6 +1300,108 @@ def main():
     
     # Sidebar for document upload and RAG selection
     with st.sidebar:
+        # === CHAT SESSION SELECTOR ===
+        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+        st.header("💬 Chat Sessions")
+        
+        # Get all chat sessions
+        all_sessions = get_all_chat_sessions()
+        current_session_id = get_or_create_session_id()
+        
+        # Create new chat button
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("➕ New Chat", use_container_width=True):
+                create_new_chat_session()
+                st.rerun()
+        
+        with col2:
+            if st.button("🔄", help="Refresh chat list"):
+                st.rerun()
+        
+        # Display chat sessions
+        if all_sessions:
+            st.write("**Select a chat:**")
+            for i, session in enumerate(all_sessions):
+                is_current = session['session_id'] == current_session_id
+                
+                # Create a container for each chat session
+                with st.container():
+                    col1, col2, col3 = st.columns([6, 1, 1])
+                    
+                    with col1:
+                        # Chat selection button
+                        button_style = "🔵" if is_current else "⚪"
+                        chat_label = f"{button_style} {session['title']}"
+                        
+                        if st.button(
+                            chat_label,
+                            key=f"chat_{session['session_id']}",
+                            help=f"Switch to this chat\nCreated: {session['timestamp'][:19]}",
+                            use_container_width=True
+                        ):
+                            if switch_to_chat_session(session['session_id']):
+                                st.rerun()
+                    
+                    with col2:
+                        # Rename button
+                        if st.button("✏️", key=f"rename_{session['session_id']}", help="Rename chat"):
+                            st.session_state[f"rename_mode_{session['session_id']}"] = True
+                            st.rerun()
+                    
+                    with col3:
+                        # Delete button
+                        if st.button("🗑️", key=f"delete_{session['session_id']}", help="Delete chat"):
+                            if st.session_state.get(f"confirm_delete_{session['session_id']}", False):
+                                if delete_chat_session(session['session_id']):
+                                    st.success("Chat deleted!")
+                                    st.session_state[f"confirm_delete_{session['session_id']}"] = False
+                                    st.rerun()
+                            else:
+                                st.session_state[f"confirm_delete_{session['session_id']}"] = True
+                                st.warning("Click again to confirm deletion")
+                    
+                    # Rename input field
+                    if st.session_state.get(f"rename_mode_{session['session_id']}", False):
+                        new_title = st.text_input(
+                            "New chat title:",
+                            value=session['title'],
+                            key=f"rename_input_{session['session_id']}"
+                        )
+                        
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("Save", key=f"save_rename_{session['session_id']}"):
+                                if rename_chat_session(session['session_id'], new_title):
+                                    st.success("Chat renamed!")
+                                    st.session_state[f"rename_mode_{session['session_id']}"] = False
+                                    st.rerun()
+                        
+                        with col_cancel:
+                            if st.button("Cancel", key=f"cancel_rename_{session['session_id']}"):
+                                st.session_state[f"rename_mode_{session['session_id']}"] = False
+                                st.rerun()
+                    
+                    # Show confirmation message for delete
+                    if st.session_state.get(f"confirm_delete_{session['session_id']}", False):
+                        st.warning("⚠️ Are you sure? This will permanently delete this chat.")
+                
+                # Add a separator line
+                if i < len(all_sessions) - 1:
+                    st.markdown("---")
+        else:
+            st.info("No chat sessions yet. Start a new chat!")
+        
+        # Current session info
+        if st.session_state.messages:
+            st.markdown("**Current Chat:**")
+            st.caption(f"💬 {len(st.session_state.messages)} messages")
+            st.caption(f"🔑 {current_session_id[-8:]}")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        # === END CHAT SESSION SELECTOR ===
+        
+        # === DOCUMENT UPLOAD SECTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         st.header("📁 Document Upload")
         
@@ -1113,20 +1420,23 @@ def main():
                 if file_path:
                     document_paths.append(file_path)
             
-            st.session_state.uploaded_documents = document_paths
-            st.success(f"Uploaded {len(document_paths)} document(s)")
-              # Display uploaded files
-            for i, file_path in enumerate(document_paths):
-                st.write(f"📄 {os.path.basename(file_path)}")
+            if document_paths:
+                st.session_state.uploaded_documents = document_paths
+                st.success(f"Uploaded {len(document_paths)} document(s)")
+                
+                # Display uploaded files
+                for i, file_path in enumerate(document_paths):
+                    st.write(f"📄 {os.path.basename(file_path)}")
         
         st.markdown('</div>', unsafe_allow_html=True)
-          # RAG Technique Selection
+        
+        # === RAG TECHNIQUE SELECTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         st.header("🔧 RAG Technique")
         
         rag_techniques = [
             "Adaptive RAG",
-            "CRAG", 
+            "CRAG",
             "Document Augmentation",
             "Basic RAG",
             "Explainable Retrieval"
@@ -1137,6 +1447,7 @@ def main():
             rag_techniques,
             help="Select the RAG technique to use for answering questions"
         )
+        
         # Show CRAG web search toggle only if CRAG is selected
         if selected_technique == "CRAG":
             crag_web_search_enabled = st.checkbox(
@@ -1146,7 +1457,8 @@ def main():
             )
         else:
             crag_web_search_enabled = None
-                # RAG Technique descriptions
+        
+        # RAG Technique descriptions
         technique_descriptions = {
             "Adaptive RAG": "Dynamically adapts retrieval strategy based on query type (Factual, Analytical, Opinion, Contextual)",
             "CRAG": "Corrective RAG that evaluates retrieved documents and falls back to web search if needed",
@@ -1156,15 +1468,18 @@ def main():
         }
         
         st.markdown(f"""
-        <div class="technique-card">            <strong>{selected_technique}</strong><br>
+        <div class="technique-card">
+            <strong>{selected_technique}</strong><br>
             <small>{technique_descriptions[selected_technique]}</small>
         </div>
         """, unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
-          # Clear history button        # Session Management
+        
+        # === SESSION MANAGEMENT ===
         st.markdown("### 💾 Session Management")
         col1, col2 = st.columns(2)
+        
         with col1:
             if st.button("🗑️ Clear Chat"):
                 clear_current_session()
@@ -1232,6 +1547,7 @@ def main():
         
         st.markdown("### 📊 Analytics")
         col1, col2 = st.columns(2)
+        
         with col1:
             if st.button("📊 Clear Analytics"):
                 # Import the clear function
@@ -1243,7 +1559,8 @@ def main():
                 else:
                     st.session_state.confirm_clear_analytics_sidebar = True
                     st.warning("⚠️ Click again to confirm clearing ALL analytics data")
-      # Main chat interface
+    
+    # Main chat interface
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -1256,98 +1573,106 @@ def main():
                 st.caption(f"💾 Auto-saved ({len(st.session_state.messages)} msgs)")
             else:
                 st.caption("💾 Session ready")
-          # Display messages
+        
+        # Display messages
         if st.session_state.messages:
             for index, message in enumerate(st.session_state.messages):
                 display_message(message, index)
         else:
-            st.info("👋 Welcome! Upload some documents and ask me questions using different RAG techniques.")
+            st.info("👋 Welcome! Upload documents and start asking questions using different RAG techniques.")
+        
         # Chat input
         query = st.chat_input("Ask a question about your documents...")
         
         if query:
-            # Clear any previous document viewer states to prevent stale highlighting
-            keys_to_clear = [key for key in st.session_state.keys() if key.startswith('show_doc_')]
-            for key in keys_to_clear:
-                del st.session_state[key]
+            # Prevent stale highlighting
+            for key in list(st.session_state.keys()):
+                if key.startswith('highlight_'):
+                    del st.session_state[key]
             
             # Add user message
             add_message("user", query)
             
-            # Load RAG system if not already loaded or documents changed
-            if should_reload_rag_system(selected_technique, st.session_state.uploaded_documents):
-                current_hash = get_document_hash(st.session_state.uploaded_documents)
-                if current_hash != st.session_state.last_document_hash:
-                    st.info("📄 Documents changed - reloading all RAG systems...")
+            # Check if RAG system already loaded or documents changed
+            if get_document_hash(st.session_state.uploaded_documents) != st.session_state.last_document_hash:
+                st.info("📄 Documents changed - reloading all RAG systems...")
                 
-                with st.spinner(f"Loading {selected_technique}..."):
-                    rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents, crag_web_search_enabled)
-                    if rag_system:
-                        st.session_state.rag_systems[selected_technique] = rag_system
-                    else:
-                        st.error(f"Failed to load {selected_technique}")
-                        st.stop()
-              # Get response with timing
-            rag_system = st.session_state.rag_systems[selected_technique]
-            start_time = time.time()
+            # Load RAG system
+            with st.spinner(f"Loading {selected_technique}..."):
+                rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents, crag_web_search_enabled)
             
-            with st.spinner(f"Generating response with {selected_technique}..."):
-                response, context, source_chunks = get_rag_response(selected_technique, query, rag_system)
-            
-            processing_time = time.time() - start_time
-            
-            # Evaluate the response (Phase 2 & 3: Automated evaluation and storage)
-            document_sources = [os.path.basename(doc) for doc in st.session_state.uploaded_documents]
-            query_id = evaluation_manager.evaluate_rag_response(
-                query=query,
-                response=response,
-                technique=selected_technique,
-                document_sources=document_sources,
-                context=context,  # Now passing the actual retrieved context
-                processing_time=processing_time,
-                session_id=st.session_state.session_id
-            )
-            
-            # Add bot response with query_id for feedback linking and source chunks
-            add_message("assistant", response, selected_technique, query_id, source_chunks)
-            
-            # Mark this response as pending feedback (Phase 1: User feedback collection)
-            st.session_state.pending_feedback[query_id] = True
-            
-            # Rerun to update the display
-            st.rerun()
-    
-    with col2:
-        st.header("📊 Statistics")
-          # Message statistics
-        total_messages = len(st.session_state.messages)
-        user_messages = len([m for m in st.session_state.messages if m["role"] == "user"])
+            if rag_system:
+                # Store RAG system for future use
+                st.session_state.rag_systems[selected_technique] = rag_system
+                
+                # Generate response timing
+                start_time = time.time()
+                
+                with st.spinner(f"Generating response with {selected_technique}..."):
+                    response, context, source_chunks = get_rag_response(selected_technique, query, rag_system)
+                
+                end_time = time.time()
+                response_time = end_time - start_time
+                
+                # Add assistant message (we'll get the query_id from evaluation)
+                add_message("assistant", response, selected_technique, None, source_chunks)
+                
+                # Store evaluation data (automatic evaluation)
+                try:
+                    document_sources = [os.path.basename(doc) for doc in st.session_state.uploaded_documents]
+                    query_id = evaluation_manager.evaluate_rag_response(
+                        query=query,
+                        response=response,
+                        context=context,  # The retrieved context
+                        technique=selected_technique,
+                        processing_time=response_time,
+                        document_sources=document_sources,
+                        session_id=get_or_create_session_id()
+                    )
+                    
+                    # Update the assistant message with the query_id
+                    if st.session_state.messages:
+                        st.session_state.messages[-1]["query_id"] = query_id
+                    
+                    # Mark this response as pending feedback (Phase 1: User feedback collection)
+                    st.session_state.pending_feedback[query_id] = True
+                    
+                    st.rerun()
+                except Exception as eval_error:
+                    st.warning(f"Response generated but evaluation storage failed: {eval_error}")
         
-        st.metric("Total Messages", total_messages)
-        st.metric("Questions Asked", user_messages)
-        st.metric("Documents Loaded", len(st.session_state.uploaded_documents))
-        
-        # Evaluation metrics preview
-        st.subheader("📊 Performance Preview")
-        comparison_data = evaluation_manager.get_technique_comparison()
-        
-        if comparison_data:
-            # Show current session performance
-            for technique, data in comparison_data.items():
-                if data['total_queries'] > 0:
-                    avg_rating = data.get('avg_user_rating', 0)
-                    if avg_rating and not pd.isna(avg_rating):
-                        st.metric(
-                            f"{technique} Rating", 
-                            f"{avg_rating:.1f}/5",
-                            help=f"Average user rating based on {data.get('feedback_count', 0)} feedback(s)"
-                        )
+        # Show basic statistics
+        with col2:
+            st.subheader("📊 Statistics")
+            
+            # Message statistics
+            user_messages = len([m for m in st.session_state.messages if m["role"] == "user"])
+            assistant_messages = len([m for m in st.session_state.messages if m["role"] == "assistant"])
+            total_messages = len(st.session_state.messages)
+            
+            st.metric("Questions", user_messages)
+            st.metric("Responses", assistant_messages)
+            st.metric("Documents", len(st.session_state.uploaded_documents))
+            
+            # Evaluation metrics preview
+            if st.session_state.messages:
+                comparison_data = evaluation_manager.get_technique_comparison()
+                
+                for technique, data in comparison_data.items():
+                    if data['total_queries'] > 0:
+                        avg_rating = data.get('avg_user_rating', 0)
+                        if avg_rating and not pd.isna(avg_rating):
+                            st.metric(f"{technique} Rating", 
+                                    f"{avg_rating:.1f}/5", 
+                                    help=f"Average user rating based on {data.get('feedback_count', 0)} feedback(s)"
+                            )
             
             st.info("💡 Visit the Analytics Dashboard for detailed performance insights!")
-        else:
-            st.info("📊 Performance metrics will appear here after you start chatting!")
+            
+            if not st.session_state.messages:
+                st.info("📝 Your conversation statistics will appear here after you start chatting!")
         
-        # Technique usage
+        # Export functionality
         if st.session_state.messages:
             st.subheader("Technique Usage")
             technique_counts = {}
@@ -1357,22 +1682,23 @@ def main():
                     technique_counts[technique] = technique_counts.get(technique, 0) + 1
             
             for technique, count in technique_counts.items():
-                st.write(f"• {technique}: {count}")
-        
-        # Export chat history
-        if st.session_state.messages:
+                st.write(f"**{technique}**: {count}")
+            
             st.subheader("💾 Export")
-            if st.button("Download Chat History"):
-                chat_data = {
+            if st.button("📄 Download Chat History"):
+                export_data = {
                     "messages": st.session_state.messages,
+                    "session_id": get_or_create_session_id(),
                     "export_time": datetime.now().isoformat()
                 }
+                
                 st.download_button(
                     label="📥 Download JSON",
-                    data=json.dumps(chat_data, indent=2),
+                    data=json.dumps(export_data, indent=2),
                     file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json"
                 )
+
 
 if __name__ == "__main__":
     main()
