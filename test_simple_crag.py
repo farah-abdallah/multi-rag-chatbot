@@ -1,80 +1,43 @@
-#!/usr/bin/env python3
 """
-Simple test to verify CRAG improvements with the sleep PDF
+Simple test script for CRAG functionality
 """
 
-import sys
 import os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import sys
+import tempfile
+sys.path.insert(0, os.path.abspath(os.getcwd()))
 
-from crag import CRAG
-
-def test_with_actual_pdf():
-    print("="*60)
-    print("🔧 TESTING CRAG IMPROVEMENTS WITH ACTUAL PDF")
-    print("="*60)
+def test_crag():
+    from src.crag import CRAG
+    print("Testing CRAG initialization...")
     
-    # Use the actual sleep PDF from Downloads
-    pdf_path = r"C:\Users\iTECH\AppData\Local\Temp\tmp_d4qb_ip\The_Importance_of_Sleep (1).pdf"
+    # Create a temporary file for testing
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        f.write("This is test content for CRAG testing.")
+        test_file = f.name
     
-    # Check if file exists
-    if not os.path.exists(pdf_path):
-        print(f"❌ PDF not found at: {pdf_path}")
-        print("Please ensure the PDF is available")
-        return False
-    
-    query = "What are two cognitive effects of sleep deprivation?"
-    
-    print(f"📄 Testing with: {os.path.basename(pdf_path)}")
-    print(f"🔍 Query: {query}")
+    print(f"Created test file: {test_file}")
     
     try:
-        # Initialize CRAG with stricter evaluation
-        crag = CRAG(
-            file_path=pdf_path,
-            lower_threshold=0.3,
-            upper_threshold=0.7
-        )
+        # Import and create CRAG instance
+        print("CRAG imported successfully")
+        print("Creating CRAG instance...")
         
-        print("\n🤖 Running CRAG with improved scoring...")
-        result = crag.run_with_sources(query)
+        crag = CRAG(file_path=test_file)
+        print(f"✅ CRAG created successfully with model: {crag.llm.model_name}")
         
-        print(f"\n📊 CRAG Result:")
-        print(f"Answer: {result['answer'][:200]}...")
-        print(f"Sources count: {len(result.get('sources', []))}")
-        
-        # Analyze the source chunks
-        sources = result.get('sources', [])
-        print(f"\n📋 Source Analysis:")
-        
-        for i, source in enumerate(sources):
-            print(f"\nSource {i+1}:")
-            print(f"  Score: {source.get('score', 'N/A')}")
-            print(f"  Page: {source.get('page', 'N/A')}")
-            print(f"  Text preview: {source.get('text', '')[:100]}...")
-            
-            # Check for problematic patterns
-            text_lower = source.get('text', '').lower()
-            
-            if "health benefits" in text_lower and "cognitive" not in text_lower:
-                score = source.get('score', 0)
-                print(f"  ⚠️  GENERIC HEALTH BENEFITS chunk detected!")
-                if score > 0.5:
-                    print(f"  ❌ ERROR: Generic health chunk has high score ({score})")
-                else:
-                    print(f"  ✅ GOOD: Generic health chunk has low score ({score})")
-            
-            if "cognitive" in text_lower and any(word in text_lower for word in ["concentration", "judgment", "decision", "attention"]):
-                print(f"  ✅ RELEVANT: Directly answers cognitive effects question")
-        
-        print(f"\n🎯 Test completed!")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error in test: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        # Test a simple query
+        print("Testing simple query...")
+        query = "What is this document about?"
+        response = crag.run(query)
+        print("✅ Query executed successfully")
+        print(f"Result: {response[:100]}{'...' if len(response) > 100 else ''}")
+    
+    finally:
+        # Clean up the test file
+        if os.path.exists(test_file):
+            os.remove(test_file)
+            print(f"Cleaned up test file: {test_file}")
 
 if __name__ == "__main__":
-    test_with_actual_pdf()
+    test_crag()

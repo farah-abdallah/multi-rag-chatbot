@@ -1,4 +1,0 @@
-llama-index
-google-generativeai
-nest-asyncio
-python-dotenv
