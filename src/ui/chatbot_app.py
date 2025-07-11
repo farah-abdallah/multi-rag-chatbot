@@ -1353,9 +1353,11 @@ def main():
                     st.write(f"📄 {os.path.basename(file_path)}")
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # === RAG TECHNIQUE SELECTION ===
+        # === RAG TECHNIQUE DESCRIPTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         st.header("🔧 RAG Technique")
+        
+        # Define the techniques and their descriptions (shared with the query bar dropdown)
         rag_techniques = [
             "Adaptive RAG",
             "CRAG",
@@ -1363,19 +1365,15 @@ def main():
             "Basic RAG",
             "Explainable Retrieval"
         ]
-        selected_technique = st.selectbox(
-            "Choose RAG technique:",
-            rag_techniques,
-            help="Select the RAG technique to use for answering questions"
-        )
-        if selected_technique == "CRAG":
-            crag_web_search_enabled = st.checkbox(
-                "Enable web search fallback (CRAG)",
-                value=True,
-                help="If enabled, CRAG will use web search when your document is insufficient. Disable to use only your uploaded document."
-            )
-        else:
-            crag_web_search_enabled = None
+        
+        # Initialize session state for selected technique if not exists
+        if "selected_technique" not in st.session_state:
+            st.session_state.selected_technique = "Adaptive RAG"
+            
+        # Initialize query_technique_selector if it doesn't exist
+        if "query_technique_selector" not in st.session_state:
+            st.session_state.query_technique_selector = st.session_state.selected_technique
+        
         technique_descriptions = {
             "Adaptive RAG": "Dynamically adapts retrieval strategy based on query type (Factual, Analytical, Opinion, Contextual)",
             "CRAG": "Corrective RAG that evaluates retrieved documents and falls back to web search if needed",
@@ -1383,12 +1381,21 @@ def main():
             "Basic RAG": "Standard similarity-based retrieval and response generation",
             "Explainable Retrieval": "Provides explanations for why each retrieved document chunk is relevant to your query using Gemini AI"
         }
+        
+        # Display the current selected technique description
         st.markdown(f"""
         <div class="technique-card">
-            <strong>{selected_technique}</strong><br>
-            <small>{technique_descriptions[selected_technique]}</small>
+            <strong>{st.session_state.selected_technique}</strong><br>
+            <small>{technique_descriptions[st.session_state.selected_technique]}</small>
         </div>
         """, unsafe_allow_html=True)
+        
+        # Initialize CRAG web search state if not exists
+        if "crag_web_search_enabled" not in st.session_state:
+            st.session_state.crag_web_search_enabled = True
+            
+        # We'll display the CRAG checkbox near the query input instead
+        crag_web_search_enabled = st.session_state.crag_web_search_enabled
         st.markdown('</div>', unsafe_allow_html=True)
 
         # === SESSION MANAGEMENT ===
@@ -1655,8 +1662,76 @@ def main():
         else:
             st.info("👋 Welcome! Upload documents and start asking questions using different RAG techniques.")
 
-        # Chat input
-        query = st.chat_input("Ask a question about your documents...")
+        # Add custom styling for query container
+        st.markdown("""
+        <style>
+        .query-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        .rag-select {
+            max-width: 180px;
+        }
+        /* Style for CRAG web search checkbox */
+        [data-testid="stCheckbox"] {
+            background-color: #e8f0fe;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #4c6ef5;
+        }
+        [data-testid="stCheckbox"] p {
+            font-size: 15px;
+            font-weight: 500;
+            color: #1a73e8;
+        }
+        h5 {
+            margin-bottom: 5px;
+            color: #4a4a4a;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # Create a container for the chat input area
+        query_container = st.container()
+        
+        with query_container:
+            # Show CRAG web search option first if CRAG is selected
+            if st.session_state.selected_technique == "CRAG":
+                # Add the web search checkbox directly with prominent styling
+                st.write("##### 🌐 CRAG Web Search Options")
+                web_search_enabled = st.checkbox(
+                    "Enable web search fallback", 
+                    value=st.session_state.get("crag_web_search_enabled", True),
+                    help="If enabled, CRAG will use web search when your document is insufficient."
+                )
+                # Update the session state with the new value
+                st.session_state.crag_web_search_enabled = web_search_enabled
+            
+            # Create two columns - one for chat input, one for RAG dropdown
+            input_col, dropdown_col = st.columns([4, 1])
+            
+            # Chat input in first (wider) column
+            with input_col:
+                query = st.chat_input("Ask a question about your documents...")
+            
+            # RAG technique dropdown in second (narrower) column
+            with dropdown_col:
+                # Use the same RAG techniques list
+                # Define a callback function to update selected technique
+                def on_technique_change():
+                    st.session_state.selected_technique = st.session_state.query_technique_selector
+                
+                # Use the same RAG techniques list with the callback
+                selected_technique = st.selectbox(
+                    "RAG Technique",
+                    rag_techniques,
+                    key="query_technique_selector",
+                    label_visibility="collapsed",
+                    on_change=on_technique_change
+                )
 
         if query:
             # Prevent stale highlighting
@@ -1667,23 +1742,28 @@ def main():
             # Add user message
             add_message("user", query)
 
+            # Get the currently selected technique from the dropdown
+            current_technique = st.session_state.selected_technique
+            
             # Check if RAG system already loaded or documents changed
             if get_document_hash(st.session_state.uploaded_documents) != st.session_state.last_document_hash:
                 st.info("📄 Documents changed - reloading all RAG systems...")
 
             # Load RAG system
-            with st.spinner(f"Loading {selected_technique}..."):
-                rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents, crag_web_search_enabled)
+            with st.spinner(f"Loading {current_technique}..."):
+                # Use the web search setting from session state for CRAG
+                web_search_enabled = st.session_state.crag_web_search_enabled if current_technique == "CRAG" else None
+                rag_system = load_rag_system(current_technique, st.session_state.uploaded_documents, web_search_enabled)
 
             if rag_system:
                 # Store RAG system for future use
-                st.session_state.rag_systems[selected_technique] = rag_system
+                st.session_state.rag_systems[current_technique] = rag_system
 
                 # Generate response timing
                 start_time = time.time()
 
-                with st.spinner(f"Generating response with {selected_technique}..."):
-                    response, context, source_chunks = get_rag_response(selected_technique, query, rag_system)
+                with st.spinner(f"Generating response with {current_technique}..."):
+                    response, context, source_chunks = get_rag_response(current_technique, query, rag_system)
 
                 end_time = time.time()
                 response_time = end_time - start_time
