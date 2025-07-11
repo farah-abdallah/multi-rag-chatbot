@@ -329,6 +329,37 @@ st.markdown("""
         background: rgba(0, 102, 204, 0.2) !important;
         cursor: pointer !important;
     }
+            
+
+    .chat-session-list {
+    padding: 0;
+    margin: 0;
+    }
+    .chat-session-btn {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: #F1F3F5;
+        color: #2C2C2C;
+        border: none;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        font-size: 15px;
+        font-family: 'Inter', 'Segoe UI', 'Roboto', 'DM Sans', sans-serif;
+        transition: background 0.2s, color 0.2s;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    }
+    .chat-session-btn.selected, .chat-session-btn:active {
+        background: #E0E7FF;
+        color: #4C6EF5;
+        font-weight: 600;
+    }
+    .chat-session-btn:hover {
+        background: #EDEDED;
+        color: #4C6EF5;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1298,142 +1329,33 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Sidebar for document upload and RAG selection
+    # Sidebar for document upload, RAG selection, and then chat sessions
     with st.sidebar:
-        # === CHAT SESSION SELECTOR ===
-        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.header("💬 Chat Sessions")
-        
-        # Get all chat sessions
-        all_sessions = get_all_chat_sessions()
-        current_session_id = get_or_create_session_id()
-        
-        # Create new chat button
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            if st.button("➕ New Chat", use_container_width=True):
-                create_new_chat_session()
-                st.rerun()
-        
-        with col2:
-            if st.button("🔄", help="Refresh chat list"):
-                st.rerun()
-        
-        # Display chat sessions
-        if all_sessions:
-            st.write("**Select a chat:**")
-            for i, session in enumerate(all_sessions):
-                is_current = session['session_id'] == current_session_id
-                
-                # Create a container for each chat session
-                with st.container():
-                    col1, col2, col3 = st.columns([6, 1, 1])
-                    
-                    with col1:
-                        # Chat selection button
-                        button_style = "🔵" if is_current else "⚪"
-                        chat_label = f"{button_style} {session['title']}"
-                        
-                        if st.button(
-                            chat_label,
-                            key=f"chat_{session['session_id']}",
-                            help=f"Switch to this chat\nCreated: {session['timestamp'][:19]}",
-                            use_container_width=True
-                        ):
-                            if switch_to_chat_session(session['session_id']):
-                                st.rerun()
-                    
-                    with col2:
-                        # Rename button
-                        if st.button("✏️", key=f"rename_{session['session_id']}", help="Rename chat"):
-                            st.session_state[f"rename_mode_{session['session_id']}"] = True
-                            st.rerun()
-                    
-                    with col3:
-                        # Delete button
-                        if st.button("🗑️", key=f"delete_{session['session_id']}", help="Delete chat"):
-                            if st.session_state.get(f"confirm_delete_{session['session_id']}", False):
-                                if delete_chat_session(session['session_id']):
-                                    st.success("Chat deleted!")
-                                    st.session_state[f"confirm_delete_{session['session_id']}"] = False
-                                    st.rerun()
-                            else:
-                                st.session_state[f"confirm_delete_{session['session_id']}"] = True
-                                st.warning("Click again to confirm deletion")
-                    
-                    # Rename input field
-                    if st.session_state.get(f"rename_mode_{session['session_id']}", False):
-                        new_title = st.text_input(
-                            "New chat title:",
-                            value=session['title'],
-                            key=f"rename_input_{session['session_id']}"
-                        )
-                        
-                        col_save, col_cancel = st.columns(2)
-                        with col_save:
-                            if st.button("Save", key=f"save_rename_{session['session_id']}"):
-                                if rename_chat_session(session['session_id'], new_title):
-                                    st.success("Chat renamed!")
-                                    st.session_state[f"rename_mode_{session['session_id']}"] = False
-                                    st.rerun()
-                        
-                        with col_cancel:
-                            if st.button("Cancel", key=f"cancel_rename_{session['session_id']}"):
-                                st.session_state[f"rename_mode_{session['session_id']}"] = False
-                                st.rerun()
-                    
-                    # Show confirmation message for delete
-                    if st.session_state.get(f"confirm_delete_{session['session_id']}", False):
-                        st.warning("⚠️ Are you sure? This will permanently delete this chat.")
-                
-                # Add a separator line
-                if i < len(all_sessions) - 1:
-                    st.markdown("---")
-        else:
-            st.info("No chat sessions yet. Start a new chat!")
-        
-        # Current session info
-        if st.session_state.messages:
-            st.markdown("**Current Chat:**")
-            st.caption(f"💬 {len(st.session_state.messages)} messages")
-            st.caption(f"🔑 {current_session_id[-8:]}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-        # === END CHAT SESSION SELECTOR ===
-        
         # === DOCUMENT UPLOAD SECTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         st.header("📁 Document Upload")
-        
         uploaded_files = st.file_uploader(
             "Upload documents",
             type=['pdf', 'txt', 'csv', 'json', 'docx', 'xlsx'],
             accept_multiple_files=True,
             help="Supported formats: PDF, TXT, CSV, JSON, DOCX, XLSX"
         )
-        
         if uploaded_files:
-            # Save uploaded files
             document_paths = []
             for uploaded_file in uploaded_files:
                 file_path = save_uploaded_file(uploaded_file)
                 if file_path:
                     document_paths.append(file_path)
-            
             if document_paths:
                 st.session_state.uploaded_documents = document_paths
                 st.success(f"Uploaded {len(document_paths)} document(s)")
-                
-                # Display uploaded files
                 for i, file_path in enumerate(document_paths):
                     st.write(f"📄 {os.path.basename(file_path)}")
-        
         st.markdown('</div>', unsafe_allow_html=True)
-        
+
         # === RAG TECHNIQUE SELECTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
         st.header("🔧 RAG Technique")
-        
         rag_techniques = [
             "Adaptive RAG",
             "CRAG",
@@ -1441,14 +1363,11 @@ def main():
             "Basic RAG",
             "Explainable Retrieval"
         ]
-        
         selected_technique = st.selectbox(
             "Choose RAG technique:",
             rag_techniques,
             help="Select the RAG technique to use for answering questions"
         )
-        
-        # Show CRAG web search toggle only if CRAG is selected
         if selected_technique == "CRAG":
             crag_web_search_enabled = st.checkbox(
                 "Enable web search fallback (CRAG)",
@@ -1457,8 +1376,6 @@ def main():
             )
         else:
             crag_web_search_enabled = None
-        
-        # RAG Technique descriptions
         technique_descriptions = {
             "Adaptive RAG": "Dynamically adapts retrieval strategy based on query type (Factual, Analytical, Opinion, Contextual)",
             "CRAG": "Corrective RAG that evaluates retrieved documents and falls back to web search if needed",
@@ -1466,29 +1383,24 @@ def main():
             "Basic RAG": "Standard similarity-based retrieval and response generation",
             "Explainable Retrieval": "Provides explanations for why each retrieved document chunk is relevant to your query using Gemini AI"
         }
-        
         st.markdown(f"""
         <div class="technique-card">
             <strong>{selected_technique}</strong><br>
             <small>{technique_descriptions[selected_technique]}</small>
         </div>
         """, unsafe_allow_html=True)
-        
         st.markdown('</div>', unsafe_allow_html=True)
-        
+
         # === SESSION MANAGEMENT ===
         st.markdown("### 💾 Session Management")
         col1, col2 = st.columns(2)
-        
         with col1:
             if st.button("🗑️ Clear Chat"):
                 clear_current_session()
                 st.success("✅ Chat cleared and saved!")
                 st.rerun()
-        
         with col2:
             if st.button("🔄 Recover Last"):
-                # Load the most recent session
                 try:
                     conn = sqlite3.connect('chat_history.db')
                     cursor = conn.cursor()
@@ -1496,12 +1408,10 @@ def main():
                         SELECT DISTINCT session_id FROM chat_sessions 
                         ORDER BY timestamp DESC LIMIT 1
                     ''')
-                    
                     result = cursor.fetchone()
                     if result and result[0] != get_or_create_session_id():
                         latest_session = result[0]
                         recovered_messages = load_chat_history(latest_session)
-                        
                         if recovered_messages:
                             st.session_state.messages = recovered_messages
                             st.session_state.last_saved_count = len(recovered_messages)
@@ -1511,11 +1421,10 @@ def main():
                             st.warning("No messages to recover")
                     else:
                         st.warning("No previous sessions found")
-                    
                     conn.close()
                 except Exception as e:
                     st.error(f"Error recovering session: {e}")
-        
+
         # Conversation Management Help
         if st.session_state.messages:
             st.markdown("### 🗂️ Individual Message Management")
@@ -1527,17 +1436,16 @@ def main():
             - Cleaning up incorrect queries
             - Managing chat history length
             """)
-            
-            # Show current stats
             user_messages = [m for m in st.session_state.messages if m["role"] == "user"]
             assistant_messages = [m for m in st.session_state.messages if m["role"] == "assistant"]
-            
             st.markdown(f"""
             **Current Session:**
             - 💬 {len(user_messages)} questions asked
             - 🤖 {len(assistant_messages)} responses given
             - 📊 {len([m for m in assistant_messages if m.get('query_id')])} responses available for rating
             """)
+
+
         
         # Show session info
         if st.session_state.messages:
@@ -1545,6 +1453,172 @@ def main():
             st.caption(f"💬 {len(st.session_state.messages)} messages")
             st.caption(f"🔑 Session: {session_id[-8:]}")
         
+        # === CHAT SESSION SELECTOR ===
+        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+        st.header("💬 Chat Sessions")
+        all_sessions = get_all_chat_sessions()
+        current_session_id = get_or_create_session_id()
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("➕ New Chat", use_container_width=True):
+                create_new_chat_session()
+                st.rerun()
+        with col2:
+            if st.button("🔄", help="Refresh chat list"):
+                st.rerun()
+        
+        # Display chat sessions
+        if all_sessions:
+            st.write("**Select a chat:**")
+            st.markdown("""
+            <style>
+            .left-chat-session-list {
+                padding: 0;
+                margin: 0;
+            }
+            .left-chat-session-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 6px 0 6px 0;
+                border: none;
+                border-bottom: 1px solid #ececec;
+                background: transparent;
+                transition: background 0.2s;
+                font-size: 15px;
+                font-family: 'Inter', 'Segoe UI', 'Roboto', 'DM Sans', sans-serif;
+            }
+            .left-chat-session-row.selected {
+                background: #E0E7FF;
+            }
+            .left-chat-session-title {
+                flex: 1;
+                color: #2C2C2C;
+                cursor: pointer;
+                background: none;
+                border: none;
+                text-align: left;
+                padding: 0 0 0 8px;
+                margin: 0;
+                font-size: 15px;
+                overflow: hidden;
+                white-space: nowrap;
+                text-overflow: ellipsis;
+            }
+            .left-chat-session-actions {
+                display: flex;
+                gap: 2px;
+                margin-left: 8px;
+            }
+            .left-chat-action-btn {
+                background: none;
+                border: none;
+                color: #888;
+                font-size: 15px;
+                padding: 2px 4px;
+                border-radius: 4px;
+                cursor: pointer;
+                transition: background 0.15s;
+                line-height: 1;
+                height: 22px;
+                width: 22px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .left-chat-action-btn:hover {
+                background: #f1f3f5;
+                color: #4C6EF5;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+
+            for session in all_sessions:
+                is_current = session['session_id'] == current_session_id
+                row_class = "left-chat-session-row selected" if is_current else "left-chat-session-row"
+                rename_key = f"left_rename_{session['session_id']}"
+                delete_key = f"left_delete_{session['session_id']}"
+                confirm_delete_key = f"left_confirm_delete_{session['session_id']}"
+                rename_mode_key = f"left_rename_mode_{session['session_id']}"
+                rename_input_key = f"left_rename_input_{session['session_id']}"
+                save_rename_key = f"left_save_rename_{session['session_id']}"
+                cancel_rename_key = f"left_cancel_rename_{session['session_id']}"
+
+                st.markdown(f'<div class="{row_class}">', unsafe_allow_html=True)
+                chat_clicked = st.button(
+                    session['title'],
+                    key=f"left_chat_{session['session_id']}",
+                    help="Switch to this chat",
+                    use_container_width=True
+                )
+                if chat_clicked:
+                    if switch_to_chat_session(session['session_id']):
+                        st.rerun()
+                st.markdown(
+                    f"""
+                    <div class="left-chat-session-actions">
+                        <button class="left-chat-action-btn" onclick="window.parent.postMessage({{'type':'streamlit:setComponentValue','key':'{rename_key}','value':true}}, '*')" title="Rename chat">
+                            <svg width="14" height="14" viewBox="0 0 20 20" fill="none"><path d="M14.7 3.29a1 1 0 0 1 1.42 1.42l-9.3 9.3-2.12.7.7-2.12 9.3-9.3z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <button class="left-chat-action-btn" onclick="window.parent.postMessage({{'type':'streamlit:setComponentValue','key':'{delete_key}','value':true}}, '*')" title="Delete chat">
+                            <svg width="14" height="14" viewBox="0 0 20 20" fill="none"><path d="M6 7v7m4-7v7m4-7v7M4 5h12M9 3h2a1 1 0 0 1 1 1v1H8V4a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                if st.session_state.get(rename_key, False):
+                    st.session_state[rename_mode_key] = True
+                    st.session_state[rename_key] = False
+                    st.rerun()
+                if st.session_state.get(delete_key, False):
+                    if st.session_state.get(confirm_delete_key, False):
+                        if delete_chat_session(session['session_id']):
+                            st.success("Chat deleted!")
+                            st.session_state[confirm_delete_key] = False
+                            st.session_state[delete_key] = False
+                            st.rerun()
+                    else:
+                        st.session_state[confirm_delete_key] = True
+                        st.session_state[delete_key] = False
+                        st.warning("Click again to confirm deletion")
+                        st.rerun()
+
+                if st.session_state.get(rename_mode_key, False):
+                    new_title = st.text_input(
+                        "New chat title:",
+                        value=session['title'],
+                        key=rename_input_key
+                    )
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.button("Save", key=save_rename_key):
+                            if rename_chat_session(session['session_id'], new_title):
+                                st.success("Chat renamed!")
+                                st.session_state[rename_mode_key] = False
+                                st.rerun()
+                    with col_cancel:
+                        if st.button("Cancel", key=cancel_rename_key):
+                            st.session_state[rename_mode_key] = False
+                            st.rerun()
+                if st.session_state.get(confirm_delete_key, False):
+                    st.warning("⚠️ Are you sure? This will permanently delete this chat.")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.info("No chat sessions yet. Start a new chat!")
+        
+        # Current session info
+        if st.session_state.messages:
+            st.markdown("**Current Chat:**")
+            st.caption(f"💬 {len(st.session_state.messages)} messages")
+            st.caption(f"🔑 {current_session_id[-8:]}")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        # === END CHAT SESSION SELECTOR ===
+
         st.markdown("### 📊 Analytics")
         col1, col2 = st.columns(2)
         
@@ -1559,11 +1633,11 @@ def main():
                 else:
                     st.session_state.confirm_clear_analytics_sidebar = True
                     st.warning("⚠️ Click again to confirm clearing ALL analytics data")
-    
-    # Main chat interface
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
+
+    # Main chat interface (without right sidebar)
+    col_main = st.container()
+
+    with col_main:
         # Header with session status
         col_header, col_status = st.columns([3, 1])
         with col_header:
@@ -1573,50 +1647,50 @@ def main():
                 st.caption(f"💾 Auto-saved ({len(st.session_state.messages)} msgs)")
             else:
                 st.caption("💾 Session ready")
-        
+
         # Display messages
         if st.session_state.messages:
             for index, message in enumerate(st.session_state.messages):
                 display_message(message, index)
         else:
             st.info("👋 Welcome! Upload documents and start asking questions using different RAG techniques.")
-        
+
         # Chat input
         query = st.chat_input("Ask a question about your documents...")
-        
+
         if query:
             # Prevent stale highlighting
             for key in list(st.session_state.keys()):
                 if key.startswith('highlight_'):
                     del st.session_state[key]
-            
+
             # Add user message
             add_message("user", query)
-            
+
             # Check if RAG system already loaded or documents changed
             if get_document_hash(st.session_state.uploaded_documents) != st.session_state.last_document_hash:
                 st.info("📄 Documents changed - reloading all RAG systems...")
-                
+
             # Load RAG system
             with st.spinner(f"Loading {selected_technique}..."):
                 rag_system = load_rag_system(selected_technique, st.session_state.uploaded_documents, crag_web_search_enabled)
-            
+
             if rag_system:
                 # Store RAG system for future use
                 st.session_state.rag_systems[selected_technique] = rag_system
-                
+
                 # Generate response timing
                 start_time = time.time()
-                
+
                 with st.spinner(f"Generating response with {selected_technique}..."):
                     response, context, source_chunks = get_rag_response(selected_technique, query, rag_system)
-                
+
                 end_time = time.time()
                 response_time = end_time - start_time
-                
+
                 # Add assistant message (we'll get the query_id from evaluation)
                 add_message("assistant", response, selected_technique, None, source_chunks)
-                
+
                 # Store evaluation data (automatic evaluation)
                 try:
                     document_sources = [os.path.basename(doc) for doc in st.session_state.uploaded_documents]
@@ -1629,75 +1703,17 @@ def main():
                         document_sources=document_sources,
                         session_id=get_or_create_session_id()
                     )
-                    
+
                     # Update the assistant message with the query_id
                     if st.session_state.messages:
                         st.session_state.messages[-1]["query_id"] = query_id
-                    
+
                     # Mark this response as pending feedback (Phase 1: User feedback collection)
                     st.session_state.pending_feedback[query_id] = True
-                    
+
                     st.rerun()
                 except Exception as eval_error:
                     st.warning(f"Response generated but evaluation storage failed: {eval_error}")
-        
-        # Show basic statistics
-        with col2:
-            st.subheader("📊 Statistics")
-            
-            # Message statistics
-            user_messages = len([m for m in st.session_state.messages if m["role"] == "user"])
-            assistant_messages = len([m for m in st.session_state.messages if m["role"] == "assistant"])
-            total_messages = len(st.session_state.messages)
-            
-            st.metric("Questions", user_messages)
-            st.metric("Responses", assistant_messages)
-            st.metric("Documents", len(st.session_state.uploaded_documents))
-            
-            # Evaluation metrics preview
-            if st.session_state.messages:
-                comparison_data = evaluation_manager.get_technique_comparison()
-                
-                for technique, data in comparison_data.items():
-                    if data['total_queries'] > 0:
-                        avg_rating = data.get('avg_user_rating', 0)
-                        if avg_rating and not pd.isna(avg_rating):
-                            st.metric(f"{technique} Rating", 
-                                    f"{avg_rating:.1f}/5", 
-                                    help=f"Average user rating based on {data.get('feedback_count', 0)} feedback(s)"
-                            )
-            
-            st.info("💡 Visit the Analytics Dashboard for detailed performance insights!")
-            
-            if not st.session_state.messages:
-                st.info("📝 Your conversation statistics will appear here after you start chatting!")
-        
-        # Export functionality
-        if st.session_state.messages:
-            st.subheader("Technique Usage")
-            technique_counts = {}
-            for message in st.session_state.messages:
-                if message["role"] == "assistant" and message["technique"]:
-                    technique = message["technique"]
-                    technique_counts[technique] = technique_counts.get(technique, 0) + 1
-            
-            for technique, count in technique_counts.items():
-                st.write(f"**{technique}**: {count}")
-            
-            st.subheader("💾 Export")
-            if st.button("📄 Download Chat History"):
-                export_data = {
-                    "messages": st.session_state.messages,
-                    "session_id": get_or_create_session_id(),
-                    "export_time": datetime.now().isoformat()
-                }
-                
-                st.download_button(
-                    label="📥 Download JSON",
-                    data=json.dumps(export_data, indent=2),
-                    file_name=f"chat_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json"
-                )
 
 
 if __name__ == "__main__":
