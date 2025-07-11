@@ -230,3 +230,5 @@ large_models/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+test_keys.py
