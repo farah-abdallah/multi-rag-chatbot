@@ -223,9 +223,10 @@ def get_evaluation_manager():
 
 # Custom CSS for elegant styling
 st.markdown("""
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">     
 <style>
     .main-header {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        background: #2D3748;
         padding: 2rem;
         border-radius: 10px;
         margin-bottom: 2rem;
@@ -290,11 +291,18 @@ st.markdown("""
         font-weight: bold;
     }
       .sidebar-section {
-        background: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
+        background: none;
+        padding: 0;
+        border-radius: 0;
         margin: 1rem 0;
+        border-bottom: 0.5px solid #444857; /* Change color and thickness here */
+        margin-bottom: 1.2rem;
+        padding-bottom: 0.8rem;
+            
     }
+            
+    [data-testid="stSidebar"] {
+    background-color: #23272F;
     
     .delete-button {
         background: #ff4757 !important;
@@ -932,7 +940,12 @@ def display_message(message: Dict[str, Any], message_index: int = None):
         
         with col2:
             # Add delete button for user messages
-            if st.button("🗑️", key=f"delete_user_{message['id']}", help="Delete this question and response"):
+            if st.button(
+                "✕", 
+                key=f"delete_user_{message['id']}",
+                help="Delete this question and response"
+            ):
+            
                 # Find the corresponding assistant message
                 assistant_message = None
                 if message_index is not None and message_index + 1 < len(st.session_state.messages):
@@ -1303,15 +1316,21 @@ def main():
     evaluation_manager = get_evaluation_manager()
     
     # Navigation
-    st.sidebar.title("🧭 Navigation")
+    #st.sidebar.title("🧭 Navigation")
+    st.sidebar.markdown('<h2 style="display:flex;align-items:center;"><i class="fa-solid fa-compass" style="color:#888;margin-right:8px;"></i>Navigation</h2>', unsafe_allow_html=True)
+    # page = st.sidebar.radio(
+    #     "Choose page:",
+    #     ["💬 Chat", "📊 Analytics Dashboard"],
+    #     index=0 if st.session_state.current_page == "Chat" else 1
+    # )
     page = st.sidebar.radio(
-        "Choose page:",
-        ["💬 Chat", "📊 Analytics Dashboard"],
-        index=0 if st.session_state.current_page == "Chat" else 1
+    "Choose page:",
+    ["Chat", "Analytics Dashboard"],
+    index=0 if st.session_state.current_page == "Chat" else 1
     )
     
     # Update current page
-    if page == "💬 Chat":
+    if page == "Chat":
         st.session_state.current_page = "Chat"
     else:
         st.session_state.current_page = "Analytics"
@@ -1324,7 +1343,10 @@ def main():
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1>🤖 Multi-RAG Chatbot with Evaluation</h1>
+        <h1 style="display:flex;align-items:center;">
+        <i class="fa-solid fa-robot" style="color:#888;margin-right:12px;"></i>
+        Multi-RAG Chatbot with Evaluation
+        </h1>
         <p>Compare different RAG techniques with your documents and get comprehensive analytics</p>
     </div>
     """, unsafe_allow_html=True)
@@ -1333,7 +1355,8 @@ def main():
     with st.sidebar:
         # === DOCUMENT UPLOAD SECTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.header("📁 Document Upload")
+        #st.header("📁 Document Upload")
+        st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-solid fa-folder-open" style="color:#888;margin-right:8px;"></i>Document Upload</h3>', unsafe_allow_html=True)
         uploaded_files = st.file_uploader(
             "Upload documents",
             type=['pdf', 'txt', 'csv', 'json', 'docx', 'xlsx'],
@@ -1355,7 +1378,8 @@ def main():
 
         # === RAG TECHNIQUE DESCRIPTION ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.header("🔧 RAG Technique")
+        #st.header("🔧 RAG Technique")
+        st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-solid fa-cogs" style="color:#888;margin-right:8px;"></i>RAG Technique</h3>', unsafe_allow_html=True)
         
         # Define the techniques and their descriptions (shared with the query bar dropdown)
         rag_techniques = [
@@ -1399,15 +1423,22 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
         # === SESSION MANAGEMENT ===
-        st.markdown("### 💾 Session Management")
+        st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-regular fa-floppy-disk" style="color:#888;margin-right:8px;"></i>Session Management</h3>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🗑️ Clear Chat"):
+            if st.button(
+                "✕ Clear Chat", 
+                key='clear_chat_btn',
+                help="Clear current chat session and save it for later retrieval"
+            ):
                 clear_current_session()
                 st.success("✅ Chat cleared and saved!")
                 st.rerun()
         with col2:
-            if st.button("🔄 Recover Last"):
+            if st.button(
+                "↻ Recover Last", 
+                key='recover_last_btn',
+                help="Recover the last chat session"):
                 try:
                     conn = sqlite3.connect('chat_history.db')
                     cursor = conn.cursor()
@@ -1434,23 +1465,28 @@ def main():
 
         # Conversation Management Help
         if st.session_state.messages:
-            st.markdown("### 🗂️ Individual Message Management")
-            st.info("""
-            **💡 Tip:** Click the 🗑️ button next to any question to delete that specific question and its response, including any ratings you gave.
-            
-            This is useful for:
-            - Removing test questions
-            - Cleaning up incorrect queries
-            - Managing chat history length
-            """)
+            st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-solid fa-list-check" style="color:#888;margin-right:8px;"></i>Individual Message Management</h3>', unsafe_allow_html=True)
+            st.markdown("""
+            <div style="background-color: #f0f7fb; color: #23272F; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #0096c7;">
+            <p><strong><span style="color:#888;"><i class="fa-regular fa-lightbulb"></i></span> Tip:</strong> 
+            Click the <span style="color:#888;"><i class="fa-solid fa-trash-can"></i></span> button next to any question to delete that specific question and its response, including any ratings you gave.</p>
+
+            <p>This is useful for:</p>
+            <ul>
+            <li>Removing test questions</li>
+            <li>Cleaning up incorrect queries</li>
+            <li>Managing chat history length</li>
+            </ul>
+            </div>
+            """, unsafe_allow_html=True)
             user_messages = [m for m in st.session_state.messages if m["role"] == "user"]
             assistant_messages = [m for m in st.session_state.messages if m["role"] == "assistant"]
             st.markdown(f"""
             **Current Session:**
-            - 💬 {len(user_messages)} questions asked
-            - 🤖 {len(assistant_messages)} responses given
-            - 📊 {len([m for m in assistant_messages if m.get('query_id')])} responses available for rating
-            """)
+            - <span style="color:#888;"><i class="fa-regular fa-comments"></i></span> {len(user_messages)} questions asked
+            - <span style="color:#888;"><i class="fa-solid fa-robot"></i></span> {len(assistant_messages)} responses given
+            - <span style="color:#888;"><i class="fa-solid fa-chart-bar"></i></span> {len([m for m in assistant_messages if m.get('query_id')])} responses available for rating
+            """, unsafe_allow_html=True)
 
 
         
@@ -1462,20 +1498,54 @@ def main():
         
         # === CHAT SESSION SELECTOR ===
         st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
-        st.header("💬 Chat Sessions")
+        #st.header("💬 Chat Sessions")
+        st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-regular fa-comments" style="color:#888;margin-right:8px;"></i>Chat Sessions</h3>', unsafe_allow_html=True)
         all_sessions = get_all_chat_sessions()
         current_session_id = get_or_create_session_id()
+        
+        # Add search box for chat sessions
+        search_query = st.text_input(
+            "Search chats...",
+            value=st.session_state.get("chat_search_query", ""),
+            key="chat_search_query",
+            help="Type to filter chat sessions by title or first message"
+        )
+        
+        # Filter sessions based on search query
+        if search_query:
+            filtered_sessions = []
+            query_lower = search_query.lower()
+            for session in all_sessions:
+                if (session.get('title', '').lower().find(query_lower) != -1 or
+                    str(session.get('first_message', '')).lower().find(query_lower) != -1):
+                    filtered_sessions.append(session)
+        else:
+            filtered_sessions = all_sessions
+            
+        # Show count of filtered sessions if search is active
+        if search_query:
+            st.caption(f"Found {len(filtered_sessions)} matching chats")
+        
         col1, col2 = st.columns([3, 1])
         with col1:
-            if st.button("➕ New Chat", use_container_width=True):
-                create_new_chat_session()
+            if st.button("+ New Chat", use_container_width=True):
+                new_session_id = create_new_chat_session()
+                st.session_state.persistent_session_id = new_session_id
+                st.session_state.messages = []
+                st.session_state.last_saved_count = 0
+                st.session_state.pending_feedback = {}
+                st.success("New chat session created!")
                 st.rerun()
         with col2:
-            if st.button("🔄", help="Refresh chat list"):
+            if st.button(
+                "↻", 
+                help="Refresh chat list"
+            ):
+
                 st.rerun()
         
-        # Display chat sessions
-        if all_sessions:
+        # Display filtered chat sessions
+        if filtered_sessions:
             st.write("**Select a chat:**")
             st.markdown("""
             <style>
@@ -1540,7 +1610,7 @@ def main():
             </style>
             """, unsafe_allow_html=True)
 
-            for session in all_sessions:
+            for session in filtered_sessions:
                 is_current = session['session_id'] == current_session_id
                 row_class = "left-chat-session-row selected" if is_current else "left-chat-session-row"
                 rename_key = f"left_rename_{session['session_id']}"
@@ -1614,23 +1684,30 @@ def main():
                     st.warning("⚠️ Are you sure? This will permanently delete this chat.")
 
             st.markdown('</div>', unsafe_allow_html=True)
+        elif search_query:
+            st.markdown('<div style="background-color: #f0f7fb; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #0096c7;">No chat sessions match your search. Try different keywords or clear the search box.</div>', unsafe_allow_html=True)
         else:
-            st.info("No chat sessions yet. Start a new chat!")
+            st.markdown('<div style="background-color: #f0f7fb; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #0096c7;">No chat sessions yet. Start a new chat!</div>', unsafe_allow_html=True)
         
         # Current session info
         if st.session_state.messages:
+            # st.markdown("**Current Chat:**")
+            # st.caption(f"💬 {len(st.session_state.messages)} messages")
+            # st.caption(f"🔑 {current_session_id[-8:]}")
             st.markdown("**Current Chat:**")
-            st.caption(f"💬 {len(st.session_state.messages)} messages")
-            st.caption(f"🔑 {current_session_id[-8:]}")
+            st.markdown('<span style="color:#888;"><i class="fa-regular fa-comments"></i></span> '
+                        f'{len(st.session_state.messages)} messages', unsafe_allow_html=True)
+            st.markdown('<span style="color:#888;"><i class="fa-solid fa-key"></i></span> '
+                        f'{current_session_id[-8:]}', unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
         # === END CHAT SESSION SELECTOR ===
 
-        st.markdown("### 📊 Analytics")
-        col1, col2 = st.columns(2)
+        #st.markdown("### 📊 Analytics")
+        st.markdown('<h3 style="display:flex;align-items:center;"><i class="fa-solid fa-chart-bar" style="color:#888;margin-right:8px;"></i>Analytics</h3>', unsafe_allow_html=True)
         
         with col1:
-            if st.button("📊 Clear Analytics"):
+            if st.button('Clear Analytics', key='clear_analytics_btn'):
                 # Import the clear function
                 from analytics_dashboard import perform_database_reset
                 
@@ -1648,7 +1725,7 @@ def main():
         # Header with session status
         col_header, col_status = st.columns([3, 1])
         with col_header:
-            st.header("💬 Chat")
+            st.markdown('<h2 style="display:flex;align-items:center;"><i class="fa-regular fa-comments" style="color:#888;margin-right:8px;"></i>Chat</h2>', unsafe_allow_html=True)
         with col_status:
             if st.session_state.messages:
                 st.caption(f"💾 Auto-saved ({len(st.session_state.messages)} msgs)")
@@ -1660,7 +1737,7 @@ def main():
             for index, message in enumerate(st.session_state.messages):
                 display_message(message, index)
         else:
-            st.info("👋 Welcome! Upload documents and start asking questions using different RAG techniques.")
+            st.markdown('<div style="background-color: #f0f7fb; padding: 1rem; border-radius: 0.5rem; border-left: 4px solid #0096c7;">👋 Welcome! Upload documents and start asking questions using different RAG techniques.</div>', unsafe_allow_html=True)
 
         # Add custom styling for query container
         st.markdown("""
